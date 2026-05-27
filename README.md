@@ -28,12 +28,33 @@ cd timeline-sync
 uv sync
 ```
 
-### 2. Google credentials
+### 2. Google Cloud project setup
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com/) → APIs & Services → Credentials
-2. Create an **OAuth 2.0 Client ID** (Desktop app type)
-3. Download the JSON file and save it as `credentials.json` in the project root
-4. Enable the **Google Calendar API** (and optionally **Places API**) for your project
+#### Enable APIs
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/) and select or create a project
+2. In the left sidebar: **APIs & Services → Library**
+3. Search for **"Google Calendar API"** → click it → click **Enable**
+4. *(Optional, for place name enrichment)* Search for **"Places API"** → click it → click **Enable**
+
+#### Create OAuth credentials
+
+1. In the left sidebar: **APIs & Services → Credentials**
+2. Click **+ Create Credentials → OAuth client ID**
+3. If prompted to configure the consent screen first:
+   - Click **Configure Consent Screen** → choose **External** → fill in app name (e.g. "timeline-sync") and your email → save
+   - Under **Scopes**: no changes needed (Calendar scope is requested at runtime)
+   - Under **Test users**: add your Google account email → save
+4. Back in Credentials → **+ Create Credentials → OAuth client ID**
+5. Application type: **Desktop app** → name it anything (e.g. "timeline-sync") → click **Create**
+6. Click **Download JSON** on the newly created credential → save as `credentials.json` in the project root
+
+#### Get a Places API key *(optional)*
+
+1. In the left sidebar: **APIs & Services → Credentials**
+2. Click **+ Create Credentials → API key**
+3. Copy the key → set it as `PLACES_API_KEY` in your `.env`
+4. *(Recommended)* Click the key → under **API restrictions**, restrict it to **Places API** only
 
 ### 3. Home Assistant token
 
