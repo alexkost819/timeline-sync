@@ -1,0 +1,81 @@
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock, patch
+
+import pytest
+
+from timeline_sync.place_resolver import PlaceResolver
+from timeline_sync.visit_deriver import Visit
+
+ZONES = [
+    {
+        "entity_id": "zone.home",
+        "attributes": {"friendly_name": "Home", "latitude": 37.7, "longitude": -122.4},
+    },
+    {
+        "entity_id": "zone.work",
+        "attributes": {"friendly_name": "Office", "latitude": 37.78, "longitude": -122.39},
+    },
+]
+
+
+def make_visit(place_name: str, lat: float = 0.0, lng: float = 0.0) -> Visit:
+    return Visit(
+        visit_id="test123",
+        place_name=place_name,
+        start=datetime(2024, 1, 15, 8, tzinfo=timezone.utc),
+        end=datetime(2024, 1, 15, 9, tzinfo=timezone.utc),
+        lat=lat,
+        lng=lng,
+        source="ha_zone",
+    )
+
+
+class TestPlaceResolver:
+    def test_zone_slug_mapped_to_friendly_name(self):
+        resolver = PlaceResolver(ZONES)
+        assert resolver.resolve_place_name(make_visit("home")) == "Home"
+        assert resolver.resolve_place_name(make_visit("work")) == "Office"
+
+    def test_unknown_zone_slug_title_cased(self):
+        resolver = PlaceResolver(ZONES)
+        assert resolver.resolve_place_name(make_visit("gym_downtown")) == "Gym Downtown"
+
+    @pytest.mark.asyncio
+    async def test_zone_visit_enriched_with_friendly_name(self):
+        resolver = PlaceResolver(ZONES)
+        visit = make_visit("home", lat=37.7, lng=-122.4)
+        enriched = await resolver.enrich_visit(visit)
+        assert enriched.place_name == "Home"
+        assert enriched.source == "ha_zone"
+
+    @pytest.mark.asyncio
+    async def test_not_home_no_api_key_returns_unchanged(self):
+        resolver = PlaceResolver(ZONES, places_api_key=None)
+        visit = make_visit("not_home", lat=37.8, lng=-122.5)
+        enriched = await resolver.enrich_visit(visit)
+        assert enriched.place_name == "not_home"
+
+    @pytest.mark.asyncio
+    async def test_not_home_places_api_lookup(self):
+        resolver = PlaceResolver(ZONES, places_api_key="test-key")
+        visit = make_visit("not_home", lat=37.8, lng=-122.5)
+
+        with patch.object(resolver, "_nearby_place", new=AsyncMock(return_value="Starbucks")):
+            enriched = await resolver.enrich_visit(visit)
+
+        assert enriched.place_name == "Starbucks"
+        assert enriched.source == "places_api"
+
+    @pytest.mark.asyncio
+    async def test_not_home_falls_back_to_geocode(self):
+        resolver = PlaceResolver(ZONES, places_api_key="test-key")
+        visit = make_visit("not_home", lat=37.8, lng=-122.5)
+
+        with (
+            patch.object(resolver, "_nearby_place", new=AsyncMock(return_value=None)),
+            patch.object(resolver, "_reverse_geocode", new=AsyncMock(return_value="123 Main St")),
+        ):
+            enriched = await resolver.enrich_visit(visit)
+
+        assert enriched.place_name == "123 Main St"
+        assert enriched.source == "geocode"
