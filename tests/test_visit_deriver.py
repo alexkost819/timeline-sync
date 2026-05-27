@@ -9,12 +9,18 @@ def dt(hour: int, minute: int = 0) -> str:
     return datetime(2024, 1, 15, hour, minute, tzinfo=UTC).isoformat()
 
 
-def make_state(state: str, hour: int, minute: int = 0, lat: float = 0.0, lng: float = 0.0) -> dict:
-    return {
-        "state": state,
-        "last_changed": dt(hour, minute),
-        "attributes": {"latitude": lat, "longitude": lng},
-    }
+def make_state(
+    state: str,
+    hour: int,
+    minute: int = 0,
+    lat: float = 0.0,
+    lng: float = 0.0,
+    geocoded_location: str | None = None,
+) -> dict:
+    attrs: dict = {"latitude": lat, "longitude": lng}
+    if geocoded_location:
+        attrs["geocoded_location"] = geocoded_location
+    return {"state": state, "last_changed": dt(hour, minute), "attributes": attrs}
 
 
 class TestDeriveVisits:
@@ -67,6 +73,16 @@ class TestDeriveVisits:
         assert len(visits) == 1
         assert visits[0].source == "unknown"
         assert visits[0].lat == 37.8
+        assert visits[0].geocoded_location is None
+
+    def test_geocoded_location_threaded_through(self):
+        history = [
+            make_state("not_home", 10, lat=37.8, lng=-122.5, geocoded_location="123 Main St")
+        ]
+        window_end = datetime(2024, 1, 15, 20, tzinfo=UTC)
+        visits = derive_visits(history, ENTITY, window_end)
+
+        assert visits[0].geocoded_location == "123 Main St"
 
     def test_visit_id_is_deterministic(self):
         history = [make_state("home", 8)]

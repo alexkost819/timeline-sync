@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
@@ -15,11 +15,10 @@ class Visit:
     lat: float
     lng: float
     source: Literal["ha_zone", "places_api", "geocode", "unknown"]
+    geocoded_location: str | None = field(default=None)
 
 
 def _parse_dt(value: str) -> datetime:
-    """Parse HA last_changed/last_updated ISO string to aware datetime."""
-    # HA returns strings like "2024-01-15T08:30:00.123456+00:00"
     return datetime.fromisoformat(value)
 
 
@@ -34,11 +33,10 @@ def derive_visits(
     window_end: datetime,
 ) -> list[Visit]:
     """
-    Convert raw HA state history into a list of Visit objects.
+    Convert raw HA state history into Visit objects.
 
-    Each Visit represents a contiguous block of time where the device was in
-    the same state (zone name or "not_home"). Consecutive states with the same
-    value are collapsed into one visit.
+    Consecutive states with the same value are collapsed into one visit.
+    geocoded_location is captured from HA companion app attributes when present.
     """
     if not state_history:
         return []
@@ -48,6 +46,7 @@ def derive_visits(
     current_start: datetime | None = None
     current_lat: float = 0.0
     current_lng: float = 0.0
+    current_geocoded: str | None = None
 
     for entry in state_history:
         state = entry.get("state", "")
@@ -55,9 +54,9 @@ def derive_visits(
         attrs = entry.get("attributes", {})
         lat = float(attrs.get("latitude", 0.0))
         lng = float(attrs.get("longitude", 0.0))
+        geocoded = attrs.get("geocoded_location") or None
 
         if state != current_state:
-            # Close previous visit
             if current_state is not None and current_start is not None:
                 source: Literal["ha_zone", "places_api", "geocode", "unknown"] = (
                     "ha_zone" if current_state != "not_home" else "unknown"
@@ -71,14 +70,15 @@ def derive_visits(
                         lat=current_lat,
                         lng=current_lng,
                         source=source,
+                        geocoded_location=current_geocoded,
                     )
                 )
             current_state = state
             current_start = changed_at
             current_lat = lat
             current_lng = lng
+            current_geocoded = geocoded
 
-    # Close the final (possibly ongoing) visit
     if current_state is not None and current_start is not None:
         source = "ha_zone" if current_state != "not_home" else "unknown"
         visits.append(
@@ -86,10 +86,11 @@ def derive_visits(
                 visit_id=_visit_id(entity_id, current_state, current_start),
                 place_name=current_state,
                 start=current_start,
-                end=None,  # ongoing
+                end=None,
                 lat=current_lat,
                 lng=current_lng,
                 source=source,
+                geocoded_location=current_geocoded,
             )
         )
 

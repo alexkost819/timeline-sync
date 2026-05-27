@@ -16,7 +16,6 @@ class Config:
     places_api_key: str | None
     places_daily_limit: int
     sync_window_hours: int
-    poll_interval_seconds: int
 
 
 def load_config() -> Config:
@@ -35,5 +34,4 @@ def load_config() -> Config:
         places_api_key=os.getenv("PLACES_API_KEY") or None,
         places_daily_limit=int(os.getenv("PLACES_DAILY_LIMIT", "300")),
         sync_window_hours=int(os.getenv("SYNC_WINDOW_HOURS", "48")),
-        poll_interval_seconds=int(os.getenv("POLL_INTERVAL_SECONDS", "300")),
     )

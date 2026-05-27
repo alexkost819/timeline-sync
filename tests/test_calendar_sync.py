@@ -58,7 +58,7 @@ class TestCalendarSyncDiff:
         existing = [
             {
                 "id": "evt1",
-                "summary": "@ Home",
+                "summary": "Home",
                 "start": {"dateTime": "2024-01-15T08:00:00+00:00"},
                 "end": {"dateTime": "2024-01-15T17:00:00+00:00"},
                 "extendedProperties": {"private": {"ha_visit_id": "abc123"}},
@@ -72,7 +72,7 @@ class TestCalendarSyncDiff:
         # visit_id changes when place_name changes → old deleted, new created
         old_event = {
             "id": "evt_old",
-            "summary": "@ Home",
+            "summary": "Home",
             "start": {"dateTime": "2024-01-15T08:00:00+00:00"},
             "end": {"dateTime": "2024-01-15T09:00:00+00:00"},
             "extendedProperties": {"private": {"ha_visit_id": "old_id"}},
@@ -87,7 +87,7 @@ class TestCalendarSyncDiff:
         existing = [
             {
                 "id": "evt1",
-                "summary": "@ Home",
+                "summary": "Home",
                 "start": {"dateTime": "2024-01-15T08:00:00+00:00"},
                 "end": {"dateTime": "2024-01-15T17:00:00+00:00"},
                 "extendedProperties": {"private": {"ha_visit_id": "gone123"}},
@@ -102,7 +102,7 @@ class TestCalendarSyncDiff:
         existing = [
             {
                 "id": "evt1",
-                "summary": "@ Home",
+                "summary": "Home",
                 "start": {"dateTime": "2024-01-15T08:00:00+00:00"},
                 "end": {"dateTime": "2024-01-15T17:00:00+00:00"},
                 "extendedProperties": {"private": {"ha_visit_id": "abc123"}},

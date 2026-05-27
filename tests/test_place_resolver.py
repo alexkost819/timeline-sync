@@ -18,7 +18,12 @@ ZONES = [
 ]
 
 
-def make_visit(place_name: str, lat: float = 0.0, lng: float = 0.0) -> Visit:
+def make_visit(
+    place_name: str,
+    lat: float = 0.0,
+    lng: float = 0.0,
+    geocoded_location: str | None = None,
+) -> Visit:
     return Visit(
         visit_id="test123",
         place_name=place_name,
@@ -27,6 +32,7 @@ def make_visit(place_name: str, lat: float = 0.0, lng: float = 0.0) -> Visit:
         lat=lat,
         lng=lng,
         source="ha_zone",
+        geocoded_location=geocoded_location,
     )
 
 
@@ -67,18 +73,25 @@ class TestPlaceResolver:
         assert enriched.source == "places_api"
 
     @pytest.mark.asyncio
-    async def test_not_home_falls_back_to_geocode(self):
+    async def test_not_home_falls_back_to_ha_geocoded_location(self):
         resolver = PlaceResolver(ZONES, places_api_key="test-key")
-        visit = make_visit("not_home", lat=37.8, lng=-122.5)
+        visit = make_visit("not_home", lat=37.8, lng=-122.5, geocoded_location="123 Main St")
 
-        with (
-            patch.object(resolver, "_nearby_place", new=AsyncMock(return_value=None)),
-            patch.object(resolver, "_reverse_geocode", new=AsyncMock(return_value="123 Main St")),
-        ):
+        with patch.object(resolver, "_nearby_place", new=AsyncMock(return_value=None)):
             enriched = await resolver.enrich_visit(visit)
 
         assert enriched.place_name == "123 Main St"
         assert enriched.source == "geocode"
+
+    @pytest.mark.asyncio
+    async def test_not_home_no_geocoded_location_unchanged(self):
+        resolver = PlaceResolver(ZONES, places_api_key="test-key")
+        visit = make_visit("not_home", lat=37.8, lng=-122.5, geocoded_location=None)
+
+        with patch.object(resolver, "_nearby_place", new=AsyncMock(return_value=None)):
+            enriched = await resolver.enrich_visit(visit)
+
+        assert enriched.place_name == "not_home"
 
     @pytest.mark.asyncio
     async def test_known_names_skips_api_call(self):
@@ -97,15 +110,14 @@ class TestPlaceResolver:
         assert enriched.source == "places_api"
 
     @pytest.mark.asyncio
-    async def test_quota_exhausted_skips_api_call(self, tmp_path):
+    async def test_quota_exhausted_falls_back_to_geocoded_location(self, tmp_path):
         from timeline_sync.quota import DailyQuota
 
         exhausted_quota = DailyQuota(limit=0, path=tmp_path / "q.json")
         resolver = PlaceResolver(ZONES, places_api_key="test-key", quota=exhausted_quota)
-        visit = make_visit("not_home", lat=37.8, lng=-122.5)
+        visit = make_visit("not_home", lat=37.8, lng=-122.5, geocoded_location="456 Oak Ave")
 
-        with patch.object(resolver, "_nearby_place", new=AsyncMock()) as mock_nearby:
-            enriched = await resolver.enrich_visit(visit)
+        enriched = await resolver.enrich_visit(visit)
 
-        mock_nearby.assert_not_called()
-        assert enriched.place_name == "not_home"
+        assert enriched.place_name == "456 Oak Ave"
+        assert enriched.source == "geocode"

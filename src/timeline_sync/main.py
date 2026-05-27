@@ -45,19 +45,11 @@ def _get_credentials(credentials_file: str) -> Credentials:
     return creds
 
 
-async def run_sync(
-    config_obj=None,
-    dry_run: bool = False,
-) -> None:
-    from .config import load_config as _load
-
-    cfg = config_obj or _load()
-
+async def run_sync(cfg, dry_run: bool = False) -> None:
     now = datetime.now(UTC)
     window_start = now - timedelta(hours=cfg.sync_window_hours)
 
     reader = HAReader(cfg.ha_url, cfg.ha_token)
-
     state_history, zones = await asyncio.gather(
         reader.get_state_history(cfg.device_tracker_entity, window_start, now),
         reader.get_zones(),
@@ -65,8 +57,6 @@ async def run_sync(
 
     visits = derive_visits(state_history, cfg.device_tracker_entity, now)
 
-    # Fetch existing Calendar events before enrichment so already-enriched
-    # not_home visits reuse their stored name instead of burning quota again.
     known_names: dict[str, str] = {}
     creds = None
     syncer = None
@@ -75,7 +65,7 @@ async def run_sync(
         syncer = CalendarSync(creds, cfg.google_calendar_name)
         existing = syncer.fetch_events(window_start, now)
         known_names = {
-            vid: event["summary"].removeprefix("@ ")
+            vid: event["summary"]
             for vid, event in existing.items()
             if event.get("extendedProperties", {}).get("private", {}).get("ha_source")
             in ("places_api", "geocode")
@@ -97,14 +87,16 @@ async def run_sync(
     log.info("Sync complete: %s", counts)
 
 
-async def _poll_loop(cfg) -> None:
-    while True:
-        try:
-            await run_sync(cfg)
-        except Exception:
-            log.exception("Sync failed — will retry next interval")
-        log.info("Sleeping %ds until next sync", cfg.poll_interval_seconds)
-        await asyncio.sleep(cfg.poll_interval_seconds)
+async def listen_and_sync(cfg) -> None:
+    """Run an initial sync, then trigger on every HA location state change."""
+    log.info("Running initial sync on startup.")
+    await run_sync(cfg)
+
+    reader = HAReader(cfg.ha_url, cfg.ha_token)
+    await reader.listen_state_changes(
+        cfg.device_tracker_entity,
+        lambda: run_sync(cfg),
+    )
 
 
 def main() -> None:
@@ -118,7 +110,7 @@ def main() -> None:
     if args.dry_run or args.once:
         asyncio.run(run_sync(cfg, dry_run=args.dry_run))
     else:
-        asyncio.run(_poll_loop(cfg))
+        asyncio.run(listen_and_sync(cfg))
 
 
 if __name__ == "__main__":

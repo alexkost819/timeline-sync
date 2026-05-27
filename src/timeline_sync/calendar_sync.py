@@ -19,7 +19,7 @@ VISIT_ID_KEY = "ha_visit_id"
 def _event_body(visit: Visit, now: datetime) -> dict[str, Any]:
     end = visit.end or now
     return {
-        "summary": f"@ {visit.place_name}",
+        "summary": visit.place_name,
         "description": (f"lat: {visit.lat}, lng: {visit.lng}\nsource: {visit.source}"),
         "start": {"dateTime": visit.start.isoformat(), "timeZone": "UTC"},
         "end": {"dateTime": end.isoformat(), "timeZone": "UTC"},

@@ -1,0 +1,17 @@
+services:
+  timeline-sync:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./credentials.json:/app/credentials.json:ro
+      - ./token.pickle:/app/token.pickle
+      - quota:/root/.timeline-sync
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  quota:
