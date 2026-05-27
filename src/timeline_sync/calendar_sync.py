@@ -62,10 +62,14 @@ class CalendarSync:
         log.info("Created calendar %r (%s)", self._calendar_name, self._calendar_id)
         return self._calendar_id
 
+    def fetch_events(self, start: datetime, end: datetime) -> dict[str, dict]:
+        """Return {visit_id: event} for all Timeline events in window."""
+        calendar_id = self._get_or_create_calendar()
+        return self._fetch_events_in_window(calendar_id, start, end)
+
     def _fetch_events_in_window(
         self, calendar_id: str, start: datetime, end: datetime
     ) -> dict[str, dict]:
-        """Return {visit_id: event} for all Timeline events in window."""
         events: dict[str, dict] = {}
         page_token = None
         while True:

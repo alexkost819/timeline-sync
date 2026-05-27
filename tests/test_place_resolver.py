@@ -79,3 +79,33 @@ class TestPlaceResolver:
 
         assert enriched.place_name == "123 Main St"
         assert enriched.source == "geocode"
+
+    @pytest.mark.asyncio
+    async def test_known_names_skips_api_call(self):
+        resolver = PlaceResolver(
+            ZONES,
+            places_api_key="test-key",
+            known_names={"test123": "Starbucks"},
+        )
+        visit = make_visit("not_home", lat=37.8, lng=-122.5)
+
+        with patch.object(resolver, "_nearby_place", new=AsyncMock()) as mock_nearby:
+            enriched = await resolver.enrich_visit(visit)
+
+        mock_nearby.assert_not_called()
+        assert enriched.place_name == "Starbucks"
+        assert enriched.source == "places_api"
+
+    @pytest.mark.asyncio
+    async def test_quota_exhausted_skips_api_call(self, tmp_path):
+        from timeline_sync.quota import DailyQuota
+
+        exhausted_quota = DailyQuota(limit=0, path=tmp_path / "q.json")
+        resolver = PlaceResolver(ZONES, places_api_key="test-key", quota=exhausted_quota)
+        visit = make_visit("not_home", lat=37.8, lng=-122.5)
+
+        with patch.object(resolver, "_nearby_place", new=AsyncMock()) as mock_nearby:
+            enriched = await resolver.enrich_visit(visit)
+
+        mock_nearby.assert_not_called()
+        assert enriched.place_name == "not_home"

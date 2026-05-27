@@ -15,6 +15,7 @@ from .calendar_sync import SCOPES, CalendarSync
 from .config import load_config
 from .ha_reader import HAReader
 from .place_resolver import PlaceResolver
+from .quota import DailyQuota
 from .visit_deriver import derive_visits
 
 logging.basicConfig(
@@ -64,7 +65,24 @@ async def run_sync(
 
     visits = derive_visits(state_history, cfg.device_tracker_entity, now)
 
-    resolver = PlaceResolver(zones, cfg.places_api_key)
+    # Fetch existing Calendar events before enrichment so already-enriched
+    # not_home visits reuse their stored name instead of burning quota again.
+    known_names: dict[str, str] = {}
+    creds = None
+    syncer = None
+    if not dry_run:
+        creds = _get_credentials(cfg.google_credentials_file)
+        syncer = CalendarSync(creds, cfg.google_calendar_name)
+        existing = syncer.fetch_events(window_start, now)
+        known_names = {
+            vid: event["summary"].removeprefix("@ ")
+            for vid, event in existing.items()
+            if event.get("extendedProperties", {}).get("private", {}).get("ha_source")
+            in ("places_api", "geocode")
+        }
+
+    quota = DailyQuota(limit=cfg.places_daily_limit) if cfg.places_api_key else None
+    resolver = PlaceResolver(zones, cfg.places_api_key, quota=quota, known_names=known_names)
     enriched = await asyncio.gather(*[resolver.enrich_visit(v) for v in visits])
 
     if dry_run:
@@ -74,8 +92,6 @@ async def run_sync(
             log.info("  [%s] %s → %s  (%s)", v.source, v.start.isoformat(), end_str, v.place_name)
         return
 
-    creds = _get_credentials(cfg.google_credentials_file)
-    syncer = CalendarSync(creds, cfg.google_calendar_name)
     counts = syncer.sync(list(enriched), window_start, now, dry_run=False)
     log.info("Sync complete: %s", counts)
 
