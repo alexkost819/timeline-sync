@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -22,8 +22,8 @@ def make_visit(place_name: str, lat: float = 0.0, lng: float = 0.0) -> Visit:
     return Visit(
         visit_id="test123",
         place_name=place_name,
-        start=datetime(2024, 1, 15, 8, tzinfo=timezone.utc),
-        end=datetime(2024, 1, 15, 9, tzinfo=timezone.utc),
+        start=datetime(2024, 1, 15, 8, tzinfo=UTC),
+        end=datetime(2024, 1, 15, 9, tzinfo=UTC),
         lat=lat,
         lng=lng,
         source="ha_zone",

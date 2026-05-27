@@ -40,7 +40,9 @@ class PlaceResolver:
 
     def resolve_place_name(self, visit: Visit) -> str:
         if visit.place_name != "not_home":
-            return self._zone_names.get(visit.place_name, visit.place_name.replace("_", " ").title())
+            return self._zone_names.get(
+                visit.place_name, visit.place_name.replace("_", " ").title()
+            )
         return visit.place_name
 
     async def enrich_visit(self, visit: Visit) -> Visit:
@@ -103,6 +105,7 @@ class PlaceResolver:
         return None
 
     async def _nearby_place(self, lat: float, lng: float) -> str | None:
+        assert self._api_key is not None
         payload = {
             "locationRestriction": {
                 "circle": {
@@ -112,7 +115,7 @@ class PlaceResolver:
             },
             "maxResultCount": 1,
         }
-        headers = {
+        headers: dict[str, str] = {
             "Content-Type": "application/json",
             "X-Goog-Api-Key": self._api_key,
             "X-Goog-FieldMask": "places.displayName",
@@ -133,7 +136,8 @@ class PlaceResolver:
         return None
 
     async def _reverse_geocode(self, lat: float, lng: float) -> str | None:
-        params = {
+        assert self._api_key is not None
+        params: dict[str, str] = {
             "latlng": f"{lat},{lng}",
             "key": self._api_key,
             "result_type": "establishment|point_of_interest|neighborhood",

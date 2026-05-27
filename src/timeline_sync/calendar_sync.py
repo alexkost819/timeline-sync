@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
+from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-from google.oauth2.credentials import Credentials
 
 from .visit_deriver import Visit
 
@@ -20,10 +20,7 @@ def _event_body(visit: Visit, now: datetime) -> dict[str, Any]:
     end = visit.end or now
     return {
         "summary": f"@ {visit.place_name}",
-        "description": (
-            f"lat: {visit.lat}, lng: {visit.lng}\n"
-            f"source: {visit.source}"
-        ),
+        "description": (f"lat: {visit.lat}, lng: {visit.lng}\nsource: {visit.source}"),
         "start": {"dateTime": visit.start.isoformat(), "timeZone": "UTC"},
         "end": {"dateTime": end.isoformat(), "timeZone": "UTC"},
         "extendedProperties": {
@@ -53,11 +50,7 @@ class CalendarSync:
                 return self._calendar_id
 
         # Create it
-        calendar = (
-            self._service.calendars()
-            .insert(body={"summary": self._calendar_name})
-            .execute()
-        )
+        calendar = self._service.calendars().insert(body={"summary": self._calendar_name}).execute()
         self._calendar_id = calendar["id"]
         log.info("Created calendar %r (%s)", self._calendar_name, self._calendar_id)
         return self._calendar_id
@@ -77,8 +70,8 @@ class CalendarSync:
                 self._service.events()
                 .list(
                     calendarId=calendar_id,
-                    timeMin=start.astimezone(timezone.utc).isoformat(),
-                    timeMax=end.astimezone(timezone.utc).isoformat(),
+                    timeMin=start.astimezone(UTC).isoformat(),
+                    timeMax=end.astimezone(UTC).isoformat(),
                     privateExtendedProperty=f"{VISIT_ID_KEY}=*",
                     singleEvents=True,
                     pageToken=page_token,
@@ -86,11 +79,7 @@ class CalendarSync:
                 .execute()
             )
             for event in result.get("items", []):
-                vid = (
-                    event.get("extendedProperties", {})
-                    .get("private", {})
-                    .get(VISIT_ID_KEY)
-                )
+                vid = event.get("extendedProperties", {}).get("private", {}).get(VISIT_ID_KEY)
                 if vid:
                     events[vid] = event
             page_token = result.get("nextPageToken")
@@ -109,7 +98,7 @@ class CalendarSync:
         Diff visits against Calendar events in window, apply create/update/delete.
         Returns counts of operations performed.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         calendar_id = self._get_or_create_calendar()
         existing = self._fetch_events_in_window(calendar_id, window_start, window_end)
 
@@ -138,9 +127,7 @@ class CalendarSync:
             else:
                 log.info("Creating event for visit %s (%s)", visit_id, visit.place_name)
                 if not dry_run:
-                    self._service.events().insert(
-                        calendarId=calendar_id, body=body
-                    ).execute()
+                    self._service.events().insert(calendarId=calendar_id, body=body).execute()
                 counts["created"] += 1
 
         # Delete events no longer in HA data

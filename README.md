@@ -136,7 +136,10 @@ docker run -d \
 
 ```bash
 uv sync --extra dev
-uv run pytest -v
+uv run pytest -v        # tests
+uv format               # format
+uvx ruff check .        # lint
+uv run ty check src/    # type check
 ```
 
 ### Project structure

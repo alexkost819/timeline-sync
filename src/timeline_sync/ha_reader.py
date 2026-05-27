@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import aiohttp
@@ -21,8 +21,8 @@ class HAReader:
         end: datetime,
     ) -> list[dict[str, Any]]:
         """Return flat list of state-change dicts for entity_id in [start, end]."""
-        start_str = start.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
-        end_str = end.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        start_str = start.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        end_str = end.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S+00:00")
         url = f"{self._url}/api/history/period/{start_str}"
         params = {
             "filter_entity_id": entity_id,

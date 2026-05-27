@@ -1,21 +1,19 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from timeline_sync.calendar_sync import CalendarSync
 from timeline_sync.visit_deriver import Visit
 
-WINDOW_START = datetime(2024, 1, 15, 0, tzinfo=timezone.utc)
-WINDOW_END = datetime(2024, 1, 15, 23, 59, tzinfo=timezone.utc)
+WINDOW_START = datetime(2024, 1, 15, 0, tzinfo=UTC)
+WINDOW_END = datetime(2024, 1, 15, 23, 59, tzinfo=UTC)
 
 
 def make_visit(visit_id: str, place_name: str, hour_start: int, hour_end: int | None) -> Visit:
     return Visit(
         visit_id=visit_id,
         place_name=place_name,
-        start=datetime(2024, 1, 15, hour_start, tzinfo=timezone.utc),
-        end=datetime(2024, 1, 15, hour_end, tzinfo=timezone.utc) if hour_end else None,
+        start=datetime(2024, 1, 15, hour_start, tzinfo=UTC),
+        end=datetime(2024, 1, 15, hour_end, tzinfo=UTC) if hour_end else None,
         lat=37.7,
         lng=-122.4,
         source="ha_zone",
@@ -41,7 +39,9 @@ def make_mock_service(existing_events: list[dict]) -> MagicMock:
 class TestCalendarSyncDiff:
     def _make_syncer(self, existing_events: list[dict]) -> CalendarSync:
         mock_creds = MagicMock()
-        with patch("timeline_sync.calendar_sync.build", return_value=make_mock_service(existing_events)):
+        with patch(
+            "timeline_sync.calendar_sync.build", return_value=make_mock_service(existing_events)
+        ):
             syncer = CalendarSync(mock_creds, "Timeline")
         return syncer
 
@@ -54,7 +54,6 @@ class TestCalendarSyncDiff:
         assert counts["deleted"] == 0
 
     def test_unchanged_visit_not_updated(self):
-        now = datetime.now(timezone.utc)
         visit = make_visit("abc123", "Home", 8, 17)
         existing = [
             {

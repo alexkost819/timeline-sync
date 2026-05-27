@@ -4,12 +4,12 @@ import argparse
 import asyncio
 import logging
 import os
-from datetime import datetime, timedelta, timezone
+import pickle
+from datetime import UTC, datetime, timedelta
 
+from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
-import pickle
 
 from .calendar_sync import SCOPES, CalendarSync
 from .config import load_config
@@ -53,7 +53,7 @@ async def run_sync(
 
     cfg = config_obj or _load()
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     window_start = now - timedelta(hours=cfg.sync_window_hours)
 
     reader = HAReader(cfg.ha_url, cfg.ha_token)
@@ -92,6 +92,7 @@ async def run_sync(
             log.info("  [%s] %s → %s  (%s)", v.source, v.start.isoformat(), end_str, v.place_name)
         return
 
+    assert syncer is not None
     counts = syncer.sync(list(enriched), window_start, now, dry_run=False)
     log.info("Sync complete: %s", counts)
 
