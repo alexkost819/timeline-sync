@@ -101,6 +101,54 @@ class TestDeriveVisits:
 
         assert v1[0].visit_id != v2[0].visit_id
 
+    def test_short_completed_visit_filtered(self):
+        # 5-min visit, threshold=10 → dropped
+        history = [
+            make_state("home", 8, 0),
+            make_state("work", 8, 5),
+        ]
+        window_end = datetime(2024, 1, 15, 20, tzinfo=UTC)
+        visits = derive_visits(history, ENTITY, window_end, min_visit_minutes=10)
+
+        assert len(visits) == 1
+        assert visits[0].place_name == "work"  # ongoing, 12h elapsed → kept
+
+    def test_long_completed_visit_kept(self):
+        history = [
+            make_state("home", 8, 0),
+            make_state("work", 8, 15),
+        ]
+        window_end = datetime(2024, 1, 15, 20, tzinfo=UTC)
+        visits = derive_visits(history, ENTITY, window_end, min_visit_minutes=10)
+
+        assert any(v.place_name == "home" for v in visits)
+
+    def test_ongoing_visit_long_enough_kept(self):
+        # ongoing visit started 15 min before window_end, threshold=10 → kept
+        history = [make_state("home", 8, 45)]
+        window_end = datetime(2024, 1, 15, 9, 0, tzinfo=UTC)
+        visits = derive_visits(history, ENTITY, window_end, min_visit_minutes=10)
+
+        assert len(visits) == 1
+
+    def test_ongoing_visit_too_short_filtered(self):
+        # ongoing visit started 5 min before window_end, threshold=10 → dropped
+        history = [make_state("home", 8, 55)]
+        window_end = datetime(2024, 1, 15, 9, 0, tzinfo=UTC)
+        visits = derive_visits(history, ENTITY, window_end, min_visit_minutes=10)
+
+        assert visits == []
+
+    def test_zero_threshold_keeps_all(self):
+        history = [
+            make_state("home", 8, 0),
+            make_state("work", 8, 1),
+        ]
+        window_end = datetime(2024, 1, 15, 20, tzinfo=UTC)
+        visits = derive_visits(history, ENTITY, window_end, min_visit_minutes=0)
+
+        assert len(visits) == 2
+
     def test_full_day_sequence(self):
         history = [
             make_state("home", 6),

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Literal
 
 
@@ -31,6 +31,7 @@ def derive_visits(
     state_history: list[dict[str, Any]],
     entity_id: str,
     window_end: datetime,
+    min_visit_minutes: int = 0,
 ) -> list[Visit]:
     """
     Convert raw HA state history into Visit objects.
@@ -93,5 +94,11 @@ def derive_visits(
                 geocoded_location=current_geocoded,
             )
         )
+
+    if min_visit_minutes > 0:
+        threshold = timedelta(minutes=min_visit_minutes)
+        visits = [
+            v for v in visits if (v.end if v.end is not None else window_end) - v.start >= threshold
+        ]
 
     return visits

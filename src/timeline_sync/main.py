@@ -51,11 +51,13 @@ async def run_sync(cfg, dry_run: bool = False) -> None:
 
     reader = HAReader(cfg.ha_url, cfg.ha_token)
     state_history, zones = await asyncio.gather(
-        reader.get_state_history(cfg.device_tracker_entity, window_start, now),
+        reader.get_state_history(cfg.ha_entity, window_start, now),
         reader.get_zones(),
     )
 
-    visits = derive_visits(state_history, cfg.device_tracker_entity, now)
+    visits = derive_visits(
+        state_history, cfg.ha_entity, now, min_visit_minutes=cfg.min_visit_minutes
+    )
 
     known_names: dict[str, str] = {}
     creds = None
@@ -94,7 +96,7 @@ async def listen_and_sync(cfg) -> None:
 
     reader = HAReader(cfg.ha_url, cfg.ha_token)
     await reader.listen_state_changes(
-        cfg.device_tracker_entity,
+        cfg.ha_entity,
         lambda: run_sync(cfg),
     )
 

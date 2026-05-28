@@ -60,7 +60,7 @@ uv sync
 
 In Home Assistant: Profile → Long-Lived Access Tokens → Create token
 
-Find your device tracker entity ID in Developer Tools → States (search for `device_tracker`).
+Find your entity ID in Developer Tools → States. Works with `device_tracker.*` entities or sensor entities like `sensor.phone_geocoded_location`.
 
 ### 4. Configure
 
@@ -73,7 +73,8 @@ Edit `.env`:
 ```
 HA_URL=http://homeassistant.local:8123
 HA_TOKEN=your_token_here
-DEVICE_TRACKER_ENTITY=device_tracker.your_phone
+# Any HA entity whose state changes represent location: device_tracker.*, sensor.*_geocoded_location, etc.
+HA_ENTITY=device_tracker.your_phone
 
 GOOGLE_CREDENTIALS_FILE=credentials.json
 GOOGLE_CALENDAR_NAME=Timeline
@@ -83,6 +84,8 @@ PLACES_API_KEY=your_google_places_api_key
 PLACES_DAILY_LIMIT=300
 
 SYNC_WINDOW_HOURS=48
+# Visits (and ongoing visits not yet this long) shorter than this are ignored
+MIN_VISIT_MINUTES=10
 ```
 
 ### 5. Generate token.pickle (one-time OAuth)
