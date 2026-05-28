@@ -20,7 +20,7 @@ For each visit, the best available name is resolved in this order (first match w
 2. **Google Contact** — if the geocoded address fuzzy-matches a contact's saved address (e.g. `"Dan Smith's Home"`)
 3. **Sensor fusion** — if GPS coordinates fall within an HA zone boundary, use that zone's friendly name
 4. **known_names cache** — reuses a Places API result already stored in an existing Calendar event
-5. **Google Places API** — nearest business/establishment (optional, paid); up to 3 candidates — runner-up names go in the event description
+5. **Google Places API** — nearest business/establishment (optional, paid); up to 20 candidates sorted by visit likelihood (food, drink, gas, grocery first; EV charging, parking, auto-service last) — runner-up names go in the event description
 6. **Geocoded address** — HA companion app's reverse-geocoded address, formatted (e.g. `"1103 Fairwood Ave, Sunnyvale, CA 94089, USA"`)
 
 ## Setup
@@ -156,7 +156,7 @@ Events appear on a dedicated calendar named "Timeline" (configurable). Each even
 - **`sensor.*_geocoded_location` entity** → state is the raw address string; enriched through the full priority chain (contact → sensor fusion → Places API → formatted address)
 - **Sensor fusion** → if GPS coordinates from the sensor fall within a zone's radius, the zone's friendly name is used (requires `latitude`, `longitude`, and `radius` attributes on the HA zone entity; defaults to 100 m if `radius` is missing)
 - **Address matches a Google Contact** → title replaced with contact label, e.g. `Dan Smith's Home` or `Jane Doe's Work`
-- **Places API configured** → nearest establishment (up to 3 candidates; runner-up names appear in description)
+- **Places API configured** → nearest establishment (up to 20 candidates, sorted by type; runner-up names appear in description)
 - **Quota exhausted or no Places API key** → falls back to formatted geocoded address
 - **No enrichment available** → left as-is
 
@@ -250,9 +250,11 @@ tests/
 - `dry_run=True` in `CalendarSync.sync()` counts operations without executing them
 - `_format_address()` in `place_resolver.py` normalizes geocoded addresses (title-case, 2-char alpha words uppercased as state codes, solo 3-char alpha words uppercased as country codes); imported by `calendar_sync.py` for the `location` field
 - Google Calendar `privateExtendedProperty` filter requires exact `key=value` — wildcards are not supported; `_fetch_events_in_window` fetches all events in the window and filters client-side
-- HA history API requires `no_attributes=false` and must NOT include `minimal_response=true` — the latter strips all attributes regardless of `no_attributes`
+- HA history API must NOT include the `no_attributes` query parameter — its mere presence strips all entity attributes from the response regardless of the value (HA checks presence, not value); `minimal_response=true` has the same effect and must also be omitted
 - Contact resolver uses Google People API (not local contacts); requires `contacts.readonly` OAuth scope; `403 PERMISSION_DENIED` in logs means the People API is not enabled in your GCP project (not a re-auth issue — enable it at console.cloud.google.com/apis/library/people.googleapis.com)
 - Sensor fusion in `PlaceResolver._zone_for_coords()` uses haversine distance; zone `radius` attribute (metres) controls the boundary; defaults to 100 m if missing
+- `known_names` cache (Calendar event → visit name) only stores `places_api` and `contact` sources; `geocode` is deliberately excluded so raw address fallbacks are retried via Places API on the next run
+- Calendar event datetimes are stored without microseconds (`replace(microsecond=0)`); Google Calendar truncates to seconds on write, so microseconds in HA timestamps would otherwise cause spurious end-time updates on every sync
 
 ### Running tests
 

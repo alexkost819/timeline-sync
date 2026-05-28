@@ -213,6 +213,31 @@ class TestPlaceResolver:
         assert enriched.source == "geocode"
 
     @pytest.mark.asyncio
+    async def test_not_home_contact_match_skips_places_api(self):
+        cr = _make_contact_resolver({"500 Castro St, Mountain View, CA": "Friend's Home"})
+        resolver = PlaceResolver(ZONES, places_api_key="test-key", contact_resolver=cr)
+        visit = make_visit("not_home", lat=37.38, lng=-122.08, geocoded_location="500 Castro St, Mountain View, CA")
+
+        with patch.object(resolver, "_nearby_place", new=AsyncMock()) as mock_nearby:
+            enriched = await resolver.enrich_visit(visit)
+
+        mock_nearby.assert_not_called()
+        assert enriched.place_name == "Friend's Home"
+        assert enriched.source == "contact"
+
+    @pytest.mark.asyncio
+    async def test_all_places_api_results_in_alternatives(self):
+        resolver = PlaceResolver(ZONES, places_api_key="test-key")
+        visit = make_visit("not_home", lat=37.8, lng=-122.5)
+        many_names = [f"Place {i}" for i in range(10)]
+
+        with patch.object(resolver, "_nearby_place", new=AsyncMock(return_value=many_names)):
+            enriched = await resolver.enrich_visit(visit)
+
+        assert enriched.place_name == "Place 0"
+        assert len(enriched.alternatives) == 9
+
+    @pytest.mark.asyncio
     async def test_quota_exhausted_falls_back_to_geocoded_location(self, tmp_path):
         from timeline_sync.quota import DailyQuota
 
@@ -224,3 +249,54 @@ class TestPlaceResolver:
 
         assert enriched.place_name == "456 Oak Ave"
         assert enriched.source == "geocode"
+
+
+class TestSortPlaceNames:
+    def _place(self, name: str, types: list[str]) -> dict:
+        return {"displayName": {"text": name}, "types": types}
+
+    def test_restaurant_before_ev_charging(self):
+        from timeline_sync.place_resolver import _sort_place_names
+        places = [
+            self._place("Tesla Supercharger", ["electric_vehicle_charging_station"]),
+            self._place("Chipotle", ["fast_food_restaurant", "restaurant"]),
+        ]
+        assert _sort_place_names(places) == ["Chipotle", "Tesla Supercharger"]
+
+    def test_gas_station_before_car_repair(self):
+        from timeline_sync.place_resolver import _sort_place_names
+        places = [
+            self._place("Jiffy Lube", ["car_repair"]),
+            self._place("Shell", ["gas_station"]),
+        ]
+        assert _sort_place_names(places) == ["Shell", "Jiffy Lube"]
+
+    def test_cafe_before_parking(self):
+        from timeline_sync.place_resolver import _sort_place_names
+        places = [
+            self._place("Lot 7 Parking", ["parking"]),
+            self._place("Blue Bottle Coffee", ["cafe"]),
+        ]
+        assert _sort_place_names(places) == ["Blue Bottle Coffee", "Lot 7 Parking"]
+
+    def test_all_results_returned(self):
+        from timeline_sync.place_resolver import _sort_place_names
+        places = [self._place(f"Place {i}", ["store"]) for i in range(15)]
+        assert len(_sort_place_names(places)) == 15
+
+    def test_place_without_display_name_skipped(self):
+        from timeline_sync.place_resolver import _sort_place_names
+        places = [
+            self._place("Starbucks", ["cafe"]),
+            {"types": ["store"]},
+        ]
+        assert _sort_place_names(places) == ["Starbucks"]
+
+    def test_stable_sort_within_same_priority(self):
+        from timeline_sync.place_resolver import _sort_place_names
+        places = [
+            self._place("A Restaurant", ["restaurant"]),
+            self._place("B Cafe", ["cafe"]),
+        ]
+        result = _sort_place_names(places)
+        assert result == ["A Restaurant", "B Cafe"]

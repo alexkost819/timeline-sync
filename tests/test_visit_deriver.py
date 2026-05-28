@@ -265,6 +265,33 @@ class TestMergeConsecutiveVisits:
         assert merge_consecutive_visits([]) == []
 
 
+class TestGpsUpdateWithinSameState:
+    def test_gps_updated_within_same_state_when_first_entry_has_no_coords(self):
+        """GPS from a later same-state entry is used when the first had 0.0/0.0."""
+        history = [
+            make_state("123 Main St, City, CA", 10, 0, lat=0.0, lng=0.0),
+            make_state("123 Main St, City, CA", 10, 1, lat=37.77, lng=-122.41),
+            make_state("456 Oak Ave, City, CA", 11, 0),
+        ]
+        window_end = datetime(2024, 1, 15, 20, tzinfo=UTC)
+        visits = derive_visits(history, ENTITY, window_end)
+        main_st = next(v for v in visits if "Main" in v.place_name)
+        assert main_st.lat == 37.77
+        assert main_st.lng == -122.41
+
+    def test_geocoded_updated_within_same_state_when_first_entry_has_none(self):
+        """geocoded_location from a later same-state entry is used when first had None."""
+        history = [
+            make_state("not_home", 10, 0, lat=37.77, lng=-122.41),
+            make_state("not_home", 10, 5, lat=37.77, lng=-122.41, geocoded_location="500 Market St, SF"),
+            make_state("home", 11, 0),
+        ]
+        window_end = datetime(2024, 1, 15, 20, tzinfo=UTC)
+        visits = derive_visits(history, ENTITY, window_end)
+        not_home = next(v for v in visits if v.place_name == "not_home")
+        assert not_home.geocoded_location == "500 Market St, SF"
+
+
 class TestSensorLocationList:
     def test_sensor_location_list_parsed_as_lat_lng(self):
         # sensor.*_geocoded_location stores GPS as attrs["location"] = [lat, lng]

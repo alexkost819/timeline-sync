@@ -86,6 +86,12 @@ def derive_visits(
             current_lat = lat
             current_lng = lng
             current_geocoded = geocoded
+        else:
+            if not (current_lat or current_lng) and (lat or lng):
+                current_lat = lat
+                current_lng = lng
+            if geocoded and not current_geocoded:
+                current_geocoded = geocoded
 
     if current_state is not None and current_start is not None:
         source = "ha_zone" if current_state != "not_home" else "unknown"

@@ -31,10 +31,10 @@ VISIT_ID_KEY = "ha_visit_id"
 
 
 def _event_body(visit: Visit, now: datetime) -> dict[str, Any]:
-    end = visit.end or now
+    end = (visit.end or now).replace(microsecond=0)
     body: dict[str, Any] = {
         "summary": visit.place_name,
-        "start": {"dateTime": visit.start.isoformat(), "timeZone": "UTC"},
+        "start": {"dateTime": visit.start.replace(microsecond=0).isoformat(), "timeZone": "UTC"},
         "end": {"dateTime": end.isoformat(), "timeZone": "UTC"},
         "extendedProperties": {
             "private": {

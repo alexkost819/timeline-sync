@@ -34,3 +34,7 @@ async def test_get_state_history_request_does_not_use_minimal_response():
 
     params = captured_kwargs.get("params", {})
     assert params.get("minimal_response") != "true"
+    assert "no_attributes" not in params, (
+        "no_attributes param must be absent — HA strips attributes if the key is present at all, "
+        "regardless of value"
+    )

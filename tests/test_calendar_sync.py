@@ -258,6 +258,31 @@ class TestCalendarSyncDiff:
         assert counts["updated"] == 0
         assert counts.get("unchanged", 0) + counts.get("updated", 0) == 1  # event was seen
 
+    def test_microsecond_end_time_not_spuriously_updated(self):
+        # HA timestamps have microseconds; Google Calendar truncates to seconds on storage.
+        # Second run must treat 17:00:00.567782 == 17:00:00 as equal.
+        visit = Visit(
+            visit_id="abc123",
+            place_name="Home",
+            start=datetime(2024, 1, 15, 8, tzinfo=UTC),
+            end=datetime(2024, 1, 15, 17, 0, 0, 567782, tzinfo=UTC),
+            lat=37.7,
+            lng=-122.4,
+            source="ha_zone",
+        )
+        existing = [
+            {
+                "id": "evt1",
+                "summary": "Home",
+                "start": {"dateTime": "2024-01-15T08:00:00+00:00"},
+                "end": {"dateTime": "2024-01-15T17:00:00+00:00"},
+                "extendedProperties": {"private": {"ha_visit_id": "abc123"}},
+            }
+        ]
+        syncer = self._make_syncer(existing)
+        counts = syncer.sync([visit], WINDOW_START, WINDOW_END, dry_run=True)
+        assert counts["updated"] == 0
+
     def test_unchanged_count_incremented_for_no_change(self):
         visit = make_visit("abc123", "Home", 8, 17)
         existing = [

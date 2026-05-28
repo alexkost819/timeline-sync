@@ -37,6 +37,46 @@ def _format_address(addr: str) -> str:
     return ", ".join(result)
 
 
+_PRIORITY_PLACE_TYPES: frozenset[str] = frozenset({
+    # Food & drink
+    "restaurant", "fast_food_restaurant", "pizza_restaurant", "hamburger_restaurant",
+    "sandwich_shop", "steak_house", "seafood_restaurant", "sushi_restaurant",
+    "thai_restaurant", "chinese_restaurant", "japanese_restaurant", "korean_restaurant",
+    "mexican_restaurant", "italian_restaurant", "mediterranean_restaurant",
+    "indian_restaurant", "american_restaurant", "ramen_restaurant", "brunch_restaurant",
+    "breakfast_restaurant", "fine_dining_restaurant", "buffet_restaurant",
+    "cafe", "coffee_shop", "bakery", "bar", "wine_bar", "juice_bar", "ice_cream_shop",
+    "food_store", "meal_takeaway", "meal_delivery",
+    # Grocery & pharmacy
+    "grocery_store", "supermarket", "convenience_store", "pharmacy", "drug_store",
+    # Fuel
+    "gas_station",
+})
+
+_DEPRIORITY_PLACE_TYPES: frozenset[str] = frozenset({
+    "electric_vehicle_charging_station",
+    "car_repair", "car_wash", "car_dealer", "auto_parts_store",
+    "parking", "parking_lot", "parking_garage",
+})
+
+
+def _sort_place_names(places: list[dict]) -> list[str]:
+    """Return display names sorted by visit-likelihood: food/gas first, EV/auto-service last."""
+    def key(place: dict) -> int:
+        types = set(place.get("types", []))
+        if types & _PRIORITY_PLACE_TYPES:
+            return 0
+        if types & _DEPRIORITY_PLACE_TYPES:
+            return 2
+        return 1
+
+    return [
+        p["displayName"]["text"]
+        for p in sorted(places, key=key)
+        if p.get("displayName", {}).get("text")
+    ]
+
+
 class PlaceResolver:
     """
     Resolves place names for visits.
@@ -137,15 +177,15 @@ class PlaceResolver:
                         zone_visit = replace(geocoded, place_name=friendly, source="ha_zone")
                         return zone_visit
                 else:
-                    log.debug("sensor fusion skipped: no GPS (lat=%.5f lng=%.5f)", visit.lat, visit.lng)
+                    log.info("sensor fusion skipped: no GPS (lat=%.5f lng=%.5f)", visit.lat, visit.lng)
                 # 3. known_names cache (avoid repeat Places API calls)
                 if visit.visit_id in self._known_names:
                     return replace(geocoded, place_name=self._known_names[visit.visit_id], source="places_api")
                 # 4. Places API — business name + alternatives
                 if not self._api_key:
-                    log.debug("Places API skipped: no API key configured")
+                    log.info("Places API skipped: no API key configured")
                 elif not (visit.lat or visit.lng):
-                    log.debug("Places API skipped: no GPS coords")
+                    log.info("Places API skipped: no GPS coords (lat=%.5f lng=%.5f)", visit.lat, visit.lng)
                 elif not self._quota or not self._quota.consume(visit.start.date()):
                     log.info("Places API quota exhausted for %s", visit.start.date())
                 else:
@@ -165,9 +205,16 @@ class PlaceResolver:
         if not visit.lat and not visit.lng:
             return visit
 
-        # Places API lookup — returns up to 3 results
+        # Contact override — free, check before spending Places API quota
+        if visit.geocoded_location:
+            geocoded_visit = replace(visit, place_name=_format_address(visit.geocoded_location), source="geocode")
+            contact = self._apply_contact_override(geocoded_visit)
+            if contact is not None:
+                return contact
+
+        # Places API lookup
         if not self._api_key:
-            log.debug("Places API skipped: no API key configured")
+            log.info("Places API skipped: no API key configured")
         elif not self._quota or not self._quota.consume(visit.start.date()):
             log.info("Places API quota exhausted for %s", visit.start.date())
         else:
@@ -175,20 +222,11 @@ class PlaceResolver:
             names = await self._nearby_place(visit.lat, visit.lng)
             log.info("Places API result: %s", names or "no results")
             if names:
-                enriched = replace(
-                    visit,
-                    place_name=names[0],
-                    source="places_api",
-                    alternatives=tuple(names[1:]),
-                )
-                contact = self._apply_contact_override(enriched)
-                return contact if contact is not None else enriched
+                return replace(visit, place_name=names[0], source="places_api", alternatives=tuple(names[1:]))
 
         # Fall back to HA companion app geocoded address
         if visit.geocoded_location:
-            geocoded = replace(visit, place_name=_format_address(visit.geocoded_location), source="geocode")
-            contact = self._apply_contact_override(geocoded)
-            return contact if contact is not None else geocoded
+            return replace(visit, place_name=_format_address(visit.geocoded_location), source="geocode")
 
         return visit
 
@@ -201,12 +239,12 @@ class PlaceResolver:
                     "radius": 50.0,
                 }
             },
-            "maxResultCount": 3,
+            "maxResultCount": 20,
         }
         headers: dict[str, str] = {
             "Content-Type": "application/json",
             "X-Goog-Api-Key": self._api_key,
-            "X-Goog-FieldMask": "places.displayName",
+            "X-Goog-FieldMask": "places.displayName,places.types",
         }
         try:
             async with aiohttp.ClientSession() as session:
@@ -216,10 +254,6 @@ class PlaceResolver:
                     if resp.status != 200:
                         return []
                     data = await resp.json()
-            return [
-                p["displayName"]["text"]
-                for p in data.get("places", [])
-                if p.get("displayName", {}).get("text")
-            ]
+            return _sort_place_names(data.get("places", []))
         except Exception:
             return []

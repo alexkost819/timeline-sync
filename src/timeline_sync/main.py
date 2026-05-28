@@ -78,7 +78,7 @@ async def run_sync(
             vid: event["summary"]
             for vid, event in existing.items()
             if event.get("extendedProperties", {}).get("private", {}).get("ha_source")
-            in ("places_api", "geocode", "contact")
+            in ("places_api", "contact")  # exclude "geocode" — raw fallback, re-resolve via API
         }
         if cr is None:
             cr = ContactResolver(
