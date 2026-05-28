@@ -80,12 +80,22 @@ GOOGLE_CALENDAR_NAME=Timeline
 
 # Optional — enables place name lookup for locations outside your HA zones
 PLACES_API_KEY=your_google_places_api_key
+PLACES_DAILY_LIMIT=300
 
 SYNC_WINDOW_HOURS=48
-POLL_INTERVAL_SECONDS=300
 ```
 
-### 5. Run
+### 5. Generate token.pickle (one-time OAuth)
+
+The tool needs a `token.pickle` file containing your Google OAuth credentials. This must be created on a machine with a browser (e.g. your Mac) before deploying headless.
+
+```bash
+uv run timeline-sync --once
+```
+
+A browser window opens for Google OAuth authorization. After you approve, the token is saved to `token.pickle`. Subsequent runs (including Docker) reuse and auto-refresh this token.
+
+### 6. Run
 
 **Dry run** (no Calendar writes, prints derived visits):
 ```bash
@@ -97,18 +107,16 @@ uv run timeline-sync --dry-run
 uv run timeline-sync --once
 ```
 
-**Continuous polling** (every `POLL_INTERVAL_SECONDS`):
+**Event-driven** (connects to HA WebSocket, syncs on every location state change):
 ```bash
 uv run timeline-sync
 ```
-
-On first run, a browser window will open for Google OAuth authorization. The token is saved to `token.pickle` for subsequent runs.
 
 ## Calendar events
 
 Events appear on a dedicated calendar named "Timeline" (configurable). Each event:
 
-- **Title:** `@ Home`, `@ Office`, `@ Starbucks`
+- **Title:** `Home`, `Office`, `Starbucks`
 - **Times:** Exact entry/exit times from HA
 - **Description:** GPS coordinates and data source
 - Ongoing visits show with the current time as end (updated each sync)
@@ -117,20 +125,57 @@ Events appear on a dedicated calendar named "Timeline" (configurable). Each even
 
 - **HA zones** (home, work, etc.) → use the zone's `friendly_name` from HA
 - **`not_home` with Places API configured** → nearest establishment via Google Places
-- **`not_home` without Places API** → left as-is (no event title enrichment)
+- **`not_home` without Places API or quota exhausted** → falls back to HA companion app's `geocoded_location` attribute (reverse-geocoded address provided free by the Android app)
+- **No enrichment available** → left as-is
 
 To add a new known place, define a zone in Home Assistant and it will automatically appear with the right name on the next sync.
 
-## Docker
+## Docker deployment (Proxmox)
+
+### 1. Create a Docker LXC on Proxmox
+
+From the Proxmox shell, run the community Helper Script to create a Docker LXC:
 
 ```bash
-docker build -t timeline-sync .
-docker run -d \
-  --env-file .env \
-  -v $(pwd)/credentials.json:/app/credentials.json \
-  -v $(pwd)/token.pickle:/app/token.pickle \
-  timeline-sync
+bash -c "$(wget -qLO - https://github.com/community-scripts/ProxmoxVE/raw/main/ct/docker.sh)"
 ```
+
+Default specs (2 CPU, 2GB RAM, 8GB disk) are sufficient.
+
+### 2. Generate token.pickle on your Mac (one-time)
+
+Before deploying, create `token.pickle` locally where a browser is available:
+
+```bash
+cd /path/to/timeline-sync
+uv run timeline-sync --once
+# Browser opens → approve OAuth → token.pickle created
+```
+
+> **Note:** `--dry-run` skips credential loading entirely and will NOT create `token.pickle`. Use `--once`.
+
+### 3. Deploy to the LXC
+
+```bash
+# On your Mac — clone repo and copy secrets to LXC (replace <LXC_IP>)
+git clone https://github.com/akost819/timeline-sync /opt/timeline-sync
+scp credentials.json token.pickle root@<LXC_IP>:/opt/timeline-sync/
+
+# On the LXC
+cd /opt/timeline-sync
+cp .env.example .env   # fill in real values
+docker compose up -d
+docker compose logs -f  # verify WebSocket connected and initial sync ran
+```
+
+### 4. Verify
+
+1. `docker compose logs -f` — confirm "WebSocket connected" and "Sync complete"
+2. Move phone to a different HA zone — Calendar event should appear within seconds
+3. Check Google Calendar "Timeline" for events without `@` prefix
+4. `docker volume inspect timeline-sync_quota` — confirms quota counter persists across restarts
+
+Log rotation is handled automatically by Docker's `json-file` driver (10MB × 3 files per container, capped at 30MB).
 
 ## Development
 
@@ -138,7 +183,6 @@ docker run -d \
 uv sync --extra dev
 uv run pytest -v        # tests
 uv format               # format
-uvx ruff check .        # lint
 uv run ty check src/    # type check
 ```
 
@@ -151,7 +195,7 @@ src/timeline_sync/
   visit_deriver.py   # state history → Visit dataclasses (pure)
   place_resolver.py  # zone names + Places API enrichment
   calendar_sync.py   # Google Calendar diff + apply
-  main.py            # entry point, polling loop
+  main.py            # entry point, WebSocket event loop
 
 tests/
   test_visit_deriver.py
