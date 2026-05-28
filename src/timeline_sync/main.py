@@ -6,6 +6,7 @@ import logging
 import os
 import pickle
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -13,10 +14,11 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 
 from .calendar_sync import SCOPES, CalendarSync
 from .config import load_config
+from .contact_resolver import ContactResolver
 from .ha_reader import HAReader
 from .place_resolver import PlaceResolver
 from .quota import DailyQuota
-from .visit_deriver import derive_visits
+from .visit_deriver import derive_visits, merge_consecutive_visits
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,7 +47,11 @@ def _get_credentials(credentials_file: str) -> Credentials:
     return creds
 
 
-async def run_sync(cfg, dry_run: bool = False) -> None:
+async def run_sync(
+    cfg,
+    dry_run: bool = False,
+    contact_resolver: ContactResolver | None = None,
+) -> None:
     now = datetime.now(UTC)
     window_start = now - timedelta(hours=cfg.sync_window_hours)
 
@@ -62,6 +68,7 @@ async def run_sync(cfg, dry_run: bool = False) -> None:
     known_names: dict[str, str] = {}
     creds = None
     syncer = None
+    cr = contact_resolver
     if not dry_run:
         creds = _get_credentials(cfg.google_credentials_file)
         syncer = CalendarSync(creds, cfg.google_calendar_name)
@@ -70,34 +77,60 @@ async def run_sync(cfg, dry_run: bool = False) -> None:
             vid: event["summary"]
             for vid, event in existing.items()
             if event.get("extendedProperties", {}).get("private", {}).get("ha_source")
-            in ("places_api", "geocode")
+            in ("places_api", "geocode", "contact")
         }
+        if cr is None:
+            cr = ContactResolver(
+                creds,
+                cache_path=Path(cfg.contacts_cache_file),
+                refresh_hours=cfg.contacts_refresh_hours,
+            )
 
     quota = DailyQuota(limit=cfg.places_daily_limit) if cfg.places_api_key else None
-    resolver = PlaceResolver(zones, cfg.places_api_key, quota=quota, known_names=known_names)
+    resolver = PlaceResolver(
+        zones,
+        cfg.places_api_key,
+        quota=quota,
+        known_names=known_names,
+        contact_resolver=cr,
+    )
     enriched = await asyncio.gather(*[resolver.enrich_visit(v) for v in visits])
+    merged = merge_consecutive_visits(list(enriched))
 
     if dry_run:
-        log.info("DRY RUN — %d visits derived:", len(enriched))
-        for v in enriched:
+        log.info("DRY RUN — %d visits derived (after merge):", len(merged))
+        for v in merged:
             end_str = v.end.isoformat() if v.end else "ongoing"
             log.info("  [%s] %s → %s  (%s)", v.source, v.start.isoformat(), end_str, v.place_name)
+            if v.alternatives:
+                log.info("    Other options: %s", ", ".join(v.alternatives))
         return
 
     assert syncer is not None
-    counts = syncer.sync(list(enriched), window_start, now, dry_run=False)
+    counts = syncer.sync(list(merged), window_start, now, dry_run=False)
     log.info("Sync complete: %s", counts)
 
 
 async def listen_and_sync(cfg) -> None:
     """Run an initial sync, then trigger on every HA location state change."""
+    creds = _get_credentials(cfg.google_credentials_file)
+    contact_resolver = ContactResolver(
+        creds,
+        cache_path=Path(cfg.contacts_cache_file),
+        refresh_hours=cfg.contacts_refresh_hours,
+    )
+
     log.info("Running initial sync on startup.")
-    await run_sync(cfg)
+    await run_sync(cfg, contact_resolver=contact_resolver)
 
     reader = HAReader(cfg.ha_url, cfg.ha_token)
-    await reader.listen_state_changes(
-        cfg.ha_entity,
-        lambda: run_sync(cfg),
+
+    async def sync_callback() -> None:
+        await run_sync(cfg, contact_resolver=contact_resolver)
+
+    await asyncio.gather(
+        reader.listen_state_changes(cfg.ha_entity, sync_callback),
+        contact_resolver.watch(),
     )
 
 

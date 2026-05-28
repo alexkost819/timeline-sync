@@ -111,3 +111,102 @@ class TestCalendarSyncDiff:
         syncer = self._make_syncer(existing)
         counts = syncer.sync([visit], WINDOW_START, WINDOW_END, dry_run=True)
         assert counts == {"created": 0, "updated": 0, "deleted": 0}
+
+    def test_location_field_set_when_geocoded(self):
+        from timeline_sync.calendar_sync import _event_body
+        from datetime import UTC, datetime
+
+        visit = Visit(
+            visit_id="abc",
+            place_name="Dan's House",
+            start=datetime(2024, 1, 15, 8, tzinfo=UTC),
+            end=datetime(2024, 1, 15, 10, tzinfo=UTC),
+            lat=37.7,
+            lng=-122.4,
+            source="contact",
+            geocoded_location="123 Oak St, San Francisco, CA 94110, USA",
+        )
+        body = _event_body(visit, datetime(2024, 1, 15, 9, tzinfo=UTC))
+        assert body["location"] == "123 Oak St, San Francisco, CA 94110, USA"
+
+    def test_location_field_absent_when_no_geocoded(self):
+        from timeline_sync.calendar_sync import _event_body
+        from datetime import UTC, datetime
+
+        visit = Visit(
+            visit_id="abc",
+            place_name="Home",
+            start=datetime(2024, 1, 15, 8, tzinfo=UTC),
+            end=datetime(2024, 1, 15, 10, tzinfo=UTC),
+            lat=37.7,
+            lng=-122.4,
+            source="ha_zone",
+        )
+        body = _event_body(visit, datetime(2024, 1, 15, 9, tzinfo=UTC))
+        assert "location" not in body
+
+    def test_alternatives_in_description(self):
+        from timeline_sync.calendar_sync import _event_body
+        from datetime import UTC, datetime
+
+        visit = Visit(
+            visit_id="abc",
+            place_name="Starbucks",
+            start=datetime(2024, 1, 15, 8, tzinfo=UTC),
+            end=datetime(2024, 1, 15, 9, tzinfo=UTC),
+            lat=37.7,
+            lng=-122.4,
+            source="places_api",
+            alternatives=("Peet's Coffee", "Blue Bottle"),
+        )
+        body = _event_body(visit, datetime(2024, 1, 15, 9, tzinfo=UTC))
+        assert "Peet's Coffee" in body["description"]
+        assert "Blue Bottle" in body["description"]
+
+    def test_ongoing_visit_not_updated_on_end_time_only(self):
+        # visit.end is None → ongoing; only end time differs → skip update
+        visit = Visit(
+            visit_id="abc123",
+            place_name="Home",
+            start=datetime(2024, 1, 15, 8, tzinfo=UTC),
+            end=None,  # ongoing
+            lat=37.7,
+            lng=-122.4,
+            source="ha_zone",
+        )
+        existing = [
+            {
+                "id": "evt1",
+                "summary": "Home",
+                "start": {"dateTime": "2024-01-15T08:00:00+00:00"},
+                "end": {"dateTime": "2024-01-15T12:00:00+00:00"},  # stale end
+                "extendedProperties": {"private": {"ha_visit_id": "abc123"}},
+            }
+        ]
+        syncer = self._make_syncer(existing)
+        counts = syncer.sync([visit], WINDOW_START, WINDOW_END, dry_run=True)
+        assert counts["updated"] == 0
+
+    def test_completed_visit_updated_on_end_time_change(self):
+        # visit.end is set → completed; end time differs → trigger update
+        visit = Visit(
+            visit_id="abc123",
+            place_name="Home",
+            start=datetime(2024, 1, 15, 8, tzinfo=UTC),
+            end=datetime(2024, 1, 15, 17, tzinfo=UTC),
+            lat=37.7,
+            lng=-122.4,
+            source="ha_zone",
+        )
+        existing = [
+            {
+                "id": "evt1",
+                "summary": "Home",
+                "start": {"dateTime": "2024-01-15T08:00:00+00:00"},
+                "end": {"dateTime": "2024-01-15T16:00:00+00:00"},  # old end
+                "extendedProperties": {"private": {"ha_visit_id": "abc123"}},
+            }
+        ]
+        syncer = self._make_syncer(existing)
+        counts = syncer.sync([visit], WINDOW_START, WINDOW_END, dry_run=True)
+        assert counts["updated"] == 1

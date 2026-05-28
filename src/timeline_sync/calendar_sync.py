@@ -12,15 +12,21 @@ from .visit_deriver import Visit
 
 log = logging.getLogger(__name__)
 
-SCOPES = ["https://www.googleapis.com/auth/calendar"]
+SCOPES = [
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/contacts.readonly",
+]
 VISIT_ID_KEY = "ha_visit_id"
 
 
 def _event_body(visit: Visit, now: datetime) -> dict[str, Any]:
     end = visit.end or now
-    return {
+    description = f"lat: {visit.lat}, lng: {visit.lng}\nsource: {visit.source}"
+    if visit.alternatives:
+        description += f"\nOther options: {', '.join(visit.alternatives)}"
+    body: dict[str, Any] = {
         "summary": visit.place_name,
-        "description": (f"lat: {visit.lat}, lng: {visit.lng}\nsource: {visit.source}"),
+        "description": description,
         "start": {"dateTime": visit.start.isoformat(), "timeZone": "UTC"},
         "end": {"dateTime": end.isoformat(), "timeZone": "UTC"},
         "extendedProperties": {
@@ -30,6 +36,9 @@ def _event_body(visit: Visit, now: datetime) -> dict[str, Any]:
             }
         },
     }
+    if visit.geocoded_location:
+        body["location"] = visit.geocoded_location
+    return body
 
 
 class CalendarSync:
@@ -110,12 +119,14 @@ class CalendarSync:
             body = _event_body(visit, now)
             if visit_id in existing:
                 existing_event = existing[visit_id]
-                # Only update if summary or times changed
                 new_end = body["end"]["dateTime"]
                 old_end = existing_event.get("end", {}).get("dateTime", "")
                 new_summary = body["summary"]
                 old_summary = existing_event.get("summary", "")
-                if new_summary != old_summary or new_end != old_end:
+                new_loc = body.get("location", "")
+                old_loc = existing_event.get("location", "")
+                end_changed = new_end != old_end and visit.end is not None
+                if new_summary != old_summary or end_changed or new_loc != old_loc:
                     log.info("Updating event for visit %s (%s)", visit_id, visit.place_name)
                     if not dry_run:
                         self._service.events().update(

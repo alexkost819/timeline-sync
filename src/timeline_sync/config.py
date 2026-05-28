@@ -17,6 +17,8 @@ class Config:
     places_daily_limit: int
     sync_window_hours: int
     min_visit_minutes: int
+    contacts_refresh_hours: int
+    contacts_cache_file: str
 
 
 def load_config() -> Config:
@@ -33,7 +35,9 @@ def load_config() -> Config:
         google_credentials_file=os.getenv("GOOGLE_CREDENTIALS_FILE", "credentials.json"),
         google_calendar_name=os.getenv("GOOGLE_CALENDAR_NAME", "Timeline"),
         places_api_key=os.getenv("PLACES_API_KEY") or None,
-        places_daily_limit=int(os.getenv("PLACES_DAILY_LIMIT", "300")),
+        places_daily_limit=int(os.getenv("PLACES_DAILY_LIMIT", "50")),
         sync_window_hours=int(os.getenv("SYNC_WINDOW_HOURS", "48")),
         min_visit_minutes=int(os.getenv("MIN_VISIT_MINUTES", "10")),
+        contacts_refresh_hours=int(os.getenv("CONTACTS_REFRESH_HOURS", "24")),
+        contacts_cache_file=os.getenv("CONTACTS_CACHE_FILE", "contacts_cache.json"),
     )

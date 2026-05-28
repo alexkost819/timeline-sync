@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import dataclasses
 import hashlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
@@ -14,8 +15,9 @@ class Visit:
     end: datetime | None  # None = ongoing
     lat: float
     lng: float
-    source: Literal["ha_zone", "places_api", "geocode", "unknown"]
+    source: Literal["ha_zone", "places_api", "geocode", "contact", "unknown"]
     geocoded_location: str | None = field(default=None)
+    alternatives: tuple[str, ...] = field(default=())
 
 
 def _parse_dt(value: str) -> datetime:
@@ -102,3 +104,17 @@ def derive_visits(
         ]
 
     return visits
+
+
+def merge_consecutive_visits(visits: list[Visit]) -> list[Visit]:
+    """Merge adjacent visits with the same place_name into one spanning visit."""
+    if not visits:
+        return []
+    merged = [visits[0]]
+    for v in visits[1:]:
+        prev = merged[-1]
+        if v.place_name == prev.place_name:
+            merged[-1] = replace(prev, end=v.end)
+        else:
+            merged.append(v)
+    return merged

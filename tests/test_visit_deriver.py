@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from timeline_sync.visit_deriver import derive_visits
+from timeline_sync.visit_deriver import derive_visits, merge_consecutive_visits
 
 ENTITY = "device_tracker.phone"
 
@@ -171,3 +171,61 @@ class TestDeriveVisits:
             "home",
         ]
         assert visits[-1].end is None  # last visit still ongoing
+
+
+class TestMergeConsecutiveVisits:
+    def _make_visit(self, place: str, hour_start: int, hour_end: int | None) -> object:
+        from datetime import UTC, datetime
+
+        from timeline_sync.visit_deriver import Visit
+
+        return Visit(
+            visit_id=f"id_{place}_{hour_start}",
+            place_name=place,
+            start=datetime(2024, 1, 15, hour_start, tzinfo=UTC),
+            end=datetime(2024, 1, 15, hour_end, tzinfo=UTC) if hour_end else None,
+            lat=0.0,
+            lng=0.0,
+            source="ha_zone",
+        )
+
+    def test_merges_adjacent_same_name(self):
+        visits = [
+            self._make_visit("Home", 8, 10),
+            self._make_visit("Home", 10, 12),
+        ]
+        result = merge_consecutive_visits(visits)
+        assert len(result) == 1
+        assert result[0].place_name == "Home"
+        assert result[0].start.hour == 8
+        assert result[0].end is not None and result[0].end.hour == 12
+
+    def test_keeps_visit_id_of_first(self):
+        visits = [
+            self._make_visit("Home", 8, 10),
+            self._make_visit("Home", 10, 12),
+        ]
+        result = merge_consecutive_visits(visits)
+        assert result[0].visit_id == "id_Home_8"
+
+    def test_keeps_different_names_separate(self):
+        visits = [
+            self._make_visit("Home", 8, 9),
+            self._make_visit("Work", 9, 17),
+            self._make_visit("Home", 17, 20),
+        ]
+        result = merge_consecutive_visits(visits)
+        assert len(result) == 3
+        assert [v.place_name for v in result] == ["Home", "Work", "Home"]
+
+    def test_merges_ongoing_end(self):
+        visits = [
+            self._make_visit("Home", 8, 10),
+            self._make_visit("Home", 10, None),  # ongoing
+        ]
+        result = merge_consecutive_visits(visits)
+        assert len(result) == 1
+        assert result[0].end is None
+
+    def test_empty_returns_empty(self):
+        assert merge_consecutive_visits([]) == []

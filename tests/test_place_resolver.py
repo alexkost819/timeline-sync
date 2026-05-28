@@ -66,10 +66,13 @@ class TestPlaceResolver:
         resolver = PlaceResolver(ZONES, places_api_key="test-key")
         visit = make_visit("not_home", lat=37.8, lng=-122.5)
 
-        with patch.object(resolver, "_nearby_place", new=AsyncMock(return_value="Starbucks")):
+        with patch.object(
+            resolver, "_nearby_place", new=AsyncMock(return_value=["Starbucks", "Peet's Coffee"])
+        ):
             enriched = await resolver.enrich_visit(visit)
 
         assert enriched.place_name == "Starbucks"
+        assert enriched.alternatives == ("Peet's Coffee",)
         assert enriched.source == "places_api"
 
     @pytest.mark.asyncio
