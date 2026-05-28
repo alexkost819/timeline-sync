@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
@@ -8,8 +9,32 @@ import aiohttp
 from .quota import DailyQuota
 from .visit_deriver import Visit
 
+log = __import__("logging").getLogger(__name__)
+
 if TYPE_CHECKING:
     from .contact_resolver import ContactResolver
+
+
+def _format_address(addr: str) -> str:
+    """Title-case address segments; uppercase 2-char state codes and 3-char solo country codes."""
+    segments = addr.split(", ")
+    result = []
+    for i, segment in enumerate(segments):
+        if i == 0:
+            result.append(segment.title())
+        else:
+            words = segment.split(" ")
+            only_alpha = sum(1 for w in words if w.isalpha()) == 1
+            formatted = []
+            for word in words:
+                if word.isdigit():
+                    formatted.append(word)
+                elif word.isalpha() and (len(word) == 2 or (len(word) == 3 and only_alpha)):
+                    formatted.append(word.upper())
+                else:
+                    formatted.append(word.title())
+            result.append(" ".join(formatted))
+    return ", ".join(result)
 
 
 class PlaceResolver:
@@ -36,10 +61,17 @@ class PlaceResolver:
         contact_resolver: ContactResolver | None = None,
     ) -> None:
         self._zone_names: dict[str, str] = {}
+        self._zone_locations: list[tuple[float, float, float, str]] = []  # (lat, lng, radius_m, slug)
         for zone in zones:
+            attrs = zone.get("attributes", {})
             slug = zone["entity_id"].removeprefix("zone.")
-            friendly = zone.get("attributes", {}).get("friendly_name", slug)
+            friendly = attrs.get("friendly_name", slug)
             self._zone_names[slug] = friendly
+            lat = attrs.get("latitude")
+            lng = attrs.get("longitude")
+            radius = float(attrs.get("radius", 100.0))
+            if lat is not None and lng is not None:
+                self._zone_locations.append((float(lat), float(lng), radius, slug))
         self._api_key = places_api_key
         self._quota = quota or (DailyQuota() if places_api_key else None)
         self._known_names: dict[str, str] = known_names or {}
@@ -52,6 +84,18 @@ class PlaceResolver:
             )
         return visit.place_name
 
+    def _zone_for_coords(self, lat: float, lng: float) -> str | None:
+        """Return zone slug if coordinates are within a zone boundary, else None."""
+        for zone_lat, zone_lng, radius, slug in self._zone_locations:
+            dlat = math.radians(lat - zone_lat)
+            dlng = math.radians(lng - zone_lng)
+            a = (math.sin(dlat / 2) ** 2
+                 + math.cos(math.radians(zone_lat)) * math.cos(math.radians(lat)) * math.sin(dlng / 2) ** 2)
+            dist_m = 2 * math.asin(math.sqrt(a)) * 6_371_000
+            if dist_m <= radius:
+                return slug
+        return None
+
     def _apply_contact_override(self, visit: Visit) -> Visit | None:
         """If geocoded_location matches a contact, return overridden Visit, else None."""
         if self._contact_resolver and visit.geocoded_location:
@@ -63,11 +107,56 @@ class PlaceResolver:
     async def enrich_visit(self, visit: Visit) -> Visit:
         """Return a new Visit with enriched place_name and source."""
         if visit.place_name != "not_home":
-            friendly = self._zone_names.get(
-                visit.place_name,
-                visit.place_name.replace("_", " ").title(),
-            )
-            return replace(visit, place_name=friendly, source="ha_zone")
+            if visit.place_name in self._zone_names:
+                friendly = self._zone_names[visit.place_name]
+                zone_visit = replace(visit, place_name=friendly, source="ha_zone")
+                contact = self._apply_contact_override(zone_visit)
+                return contact if contact is not None else zone_visit
+            # Address-like state: sensor.*_geocoded_location entity where state IS the address
+            if ", " in visit.place_name:
+                raw_addr = visit.geocoded_location or visit.place_name
+                geocoded = replace(
+                    visit,
+                    place_name=_format_address(raw_addr),
+                    geocoded_location=raw_addr,
+                    source="geocode",
+                )
+                # 1. Contact resolver (free, highest confidence — e.g. home/work addresses)
+                contact = self._apply_contact_override(geocoded)
+                if contact is not None:
+                    return contact
+                # 2. Sensor fusion: if coordinates are inside a known zone, use zone name
+                if visit.lat or visit.lng:
+                    zone_slug = self._zone_for_coords(visit.lat, visit.lng)
+                    log.debug(
+                        "sensor fusion: (%.5f, %.5f) → zone=%s",
+                        visit.lat, visit.lng, zone_slug or "none",
+                    )
+                    if zone_slug and zone_slug in self._zone_names:
+                        friendly = self._zone_names[zone_slug]
+                        zone_visit = replace(geocoded, place_name=friendly, source="ha_zone")
+                        return zone_visit
+                else:
+                    log.debug("sensor fusion skipped: no GPS (lat=%.5f lng=%.5f)", visit.lat, visit.lng)
+                # 3. known_names cache (avoid repeat Places API calls)
+                if visit.visit_id in self._known_names:
+                    return replace(geocoded, place_name=self._known_names[visit.visit_id], source="places_api")
+                # 4. Places API — business name + alternatives
+                if not self._api_key:
+                    log.debug("Places API skipped: no API key configured")
+                elif not (visit.lat or visit.lng):
+                    log.debug("Places API skipped: no GPS coords")
+                elif not self._quota or not self._quota.consume(visit.start.date()):
+                    log.info("Places API quota exhausted for %s", visit.start.date())
+                else:
+                    log.info("Places API lookup: (%.5f, %.5f) for %s", visit.lat, visit.lng, geocoded.place_name)
+                    names = await self._nearby_place(visit.lat, visit.lng)
+                    log.info("Places API result: %s", names or "no results")
+                    if names:
+                        return replace(geocoded, place_name=names[0], source="places_api", alternatives=tuple(names[1:]))
+                return geocoded
+            # Unknown zone slug (e.g. "gym_downtown")
+            return replace(visit, place_name=visit.place_name.replace("_", " ").title(), source="ha_zone")
 
         # Reuse name from existing Calendar event — no API call needed
         if visit.visit_id in self._known_names:
@@ -77,8 +166,14 @@ class PlaceResolver:
             return visit
 
         # Places API lookup — returns up to 3 results
-        if self._api_key and self._quota and self._quota.consume(visit.start.date()):
+        if not self._api_key:
+            log.debug("Places API skipped: no API key configured")
+        elif not self._quota or not self._quota.consume(visit.start.date()):
+            log.info("Places API quota exhausted for %s", visit.start.date())
+        else:
+            log.info("Places API lookup: (%.5f, %.5f)", visit.lat, visit.lng)
             names = await self._nearby_place(visit.lat, visit.lng)
+            log.info("Places API result: %s", names or "no results")
             if names:
                 enriched = replace(
                     visit,
@@ -91,7 +186,7 @@ class PlaceResolver:
 
         # Fall back to HA companion app geocoded address
         if visit.geocoded_location:
-            geocoded = replace(visit, place_name=visit.geocoded_location, source="geocode")
+            geocoded = replace(visit, place_name=_format_address(visit.geocoded_location), source="geocode")
             contact = self._apply_contact_override(geocoded)
             return contact if contact is not None else geocoded
 

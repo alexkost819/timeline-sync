@@ -36,7 +36,6 @@ class HAReader:
         params = {
             "filter_entity_id": entity_id,
             "end_time": end_str,
-            "minimal_response": "true",
             "no_attributes": "false",
         }
         async with aiohttp.ClientSession(headers=self._headers) as session:

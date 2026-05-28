@@ -110,7 +110,7 @@ class TestCalendarSyncDiff:
         ]
         syncer = self._make_syncer(existing)
         counts = syncer.sync([visit], WINDOW_START, WINDOW_END, dry_run=True)
-        assert counts == {"created": 0, "updated": 0, "deleted": 0}
+        assert counts == {"created": 0, "updated": 0, "deleted": 0, "unchanged": 1}
 
     def test_location_field_set_when_geocoded(self):
         from timeline_sync.calendar_sync import _event_body
@@ -145,6 +145,22 @@ class TestCalendarSyncDiff:
         body = _event_body(visit, datetime(2024, 1, 15, 9, tzinfo=UTC))
         assert "location" not in body
 
+    def test_no_description_when_no_alternatives(self):
+        from timeline_sync.calendar_sync import _event_body
+        from datetime import UTC, datetime
+
+        visit = Visit(
+            visit_id="abc",
+            place_name="Home",
+            start=datetime(2024, 1, 15, 8, tzinfo=UTC),
+            end=datetime(2024, 1, 15, 10, tzinfo=UTC),
+            lat=37.7,
+            lng=-122.4,
+            source="ha_zone",
+        )
+        body = _event_body(visit, datetime(2024, 1, 15, 9, tzinfo=UTC))
+        assert "description" not in body or not body["description"]
+
     def test_alternatives_in_description(self):
         from timeline_sync.calendar_sync import _event_body
         from datetime import UTC, datetime
@@ -162,6 +178,12 @@ class TestCalendarSyncDiff:
         body = _event_body(visit, datetime(2024, 1, 15, 9, tzinfo=UTC))
         assert "Peet's Coffee" in body["description"]
         assert "Blue Bottle" in body["description"]
+
+    def test_fetch_events_does_not_use_extended_property_wildcard(self):
+        syncer = self._make_syncer([])
+        syncer.fetch_events(WINDOW_START, WINDOW_END)
+        list_kwargs = syncer._service.events.return_value.list.call_args.kwargs
+        assert list_kwargs.get("privateExtendedProperty") != "ha_visit_id=*"
 
     def test_ongoing_visit_not_updated_on_end_time_only(self):
         # visit.end is None → ongoing; only end time differs → skip update
@@ -210,3 +232,44 @@ class TestCalendarSyncDiff:
         syncer = self._make_syncer(existing)
         counts = syncer.sync([visit], WINDOW_START, WINDOW_END, dry_run=True)
         assert counts["updated"] == 1
+
+    def test_z_suffix_datetime_not_spuriously_updated(self):
+        # Google Calendar returns "Z" suffix; our code produces "+00:00" — must be treated equal
+        visit = Visit(
+            visit_id="abc123",
+            place_name="Home",
+            start=datetime(2024, 1, 15, 8, tzinfo=UTC),
+            end=datetime(2024, 1, 15, 17, tzinfo=UTC),
+            lat=37.7,
+            lng=-122.4,
+            source="ha_zone",
+        )
+        existing = [
+            {
+                "id": "evt1",
+                "summary": "Home",
+                "start": {"dateTime": "2024-01-15T08:00:00Z"},   # Google returns Z
+                "end": {"dateTime": "2024-01-15T17:00:00Z"},     # same time, Z format
+                "extendedProperties": {"private": {"ha_visit_id": "abc123"}},
+            }
+        ]
+        syncer = self._make_syncer(existing)
+        counts = syncer.sync([visit], WINDOW_START, WINDOW_END, dry_run=True)
+        assert counts["updated"] == 0
+        assert counts.get("unchanged", 0) + counts.get("updated", 0) == 1  # event was seen
+
+    def test_unchanged_count_incremented_for_no_change(self):
+        visit = make_visit("abc123", "Home", 8, 17)
+        existing = [
+            {
+                "id": "evt1",
+                "summary": "Home",
+                "start": {"dateTime": "2024-01-15T08:00:00+00:00"},
+                "end": {"dateTime": "2024-01-15T17:00:00+00:00"},
+                "extendedProperties": {"private": {"ha_visit_id": "abc123"}},
+            }
+        ]
+        syncer = self._make_syncer(existing)
+        counts = syncer.sync([visit], WINDOW_START, WINDOW_END, dry_run=True)
+        assert counts["unchanged"] == 1
+        assert counts["updated"] == 0

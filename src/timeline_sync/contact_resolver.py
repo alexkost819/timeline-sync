@@ -10,6 +10,7 @@ from typing import Any
 
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 log = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ class ContactResolver:
     every refresh_hours hours.
     """
 
-    MATCH_THRESHOLD = 0.85
+    MATCH_THRESHOLD = 0.80
 
     def __init__(
         self,
@@ -48,6 +49,17 @@ class ContactResolver:
 
         try:
             self._fetch_and_update()
+        except HttpError as e:
+            if e.resp.status == 403 and b"PERMISSION_DENIED" in (e.content or b""):
+                log.warning(
+                    "People API not enabled in this Google Cloud project — "
+                    "enable it at console.cloud.google.com/apis/library/people.googleapis.com"
+                )
+            else:
+                log.warning(
+                    "People API returned %s — check contacts.readonly OAuth scope (re-auth required)",
+                    e.resp.status,
+                )
         except Exception:
             log.warning("Failed to fetch contacts from People API; using cache if available")
 
@@ -58,6 +70,7 @@ class ContactResolver:
         best_name: str | None = None
         for contact_norm, name in self._map.items():
             ratio = SequenceMatcher(None, norm, contact_norm).ratio()
+            log.debug("contact match %.2f: %r → %r", ratio, norm, name)
             if ratio > best_ratio:
                 best_ratio = ratio
                 best_name = name
@@ -106,13 +119,12 @@ class ContactResolver:
                     if not formatted:
                         continue
                     addr_type = addr.get("type", "").lower()
-                    given = self._given_name(person)
                     if addr_type == "home":
-                        display = f"{given}'s Home" if given else label
+                        display = f"{label}'s Home" if label else "Home"
                     elif addr_type == "work":
-                        display = f"{given}'s Work" if given else label
+                        display = f"{label}'s Work" if label else "Work"
                     else:
-                        display = label
+                        display = f"{label}'s Other Address" if label else "Other Address"
                     contacts[formatted] = display
             page_token = result.get("nextPageToken")
             if not page_token:

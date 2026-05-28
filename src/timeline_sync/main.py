@@ -18,7 +18,7 @@ from .contact_resolver import ContactResolver
 from .ha_reader import HAReader
 from .place_resolver import PlaceResolver
 from .quota import DailyQuota
-from .visit_deriver import derive_visits, merge_consecutive_visits
+from .visit_deriver import derive_visits, merge_consecutive_visits, merge_nearby_visits
 
 logging.basicConfig(
     level=logging.INFO,
@@ -64,6 +64,7 @@ async def run_sync(
     visits = derive_visits(
         state_history, cfg.ha_entity, now, min_visit_minutes=cfg.min_visit_minutes
     )
+    visits = merge_nearby_visits(visits, radius_m=cfg.gps_proximity_meters)
 
     known_names: dict[str, str] = {}
     creds = None

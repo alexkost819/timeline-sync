@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from timeline_sync.visit_deriver import derive_visits, merge_consecutive_visits
+from timeline_sync.visit_deriver import Visit, derive_visits, merge_consecutive_visits, merge_nearby_visits
 
 ENTITY = "device_tracker.phone"
 
@@ -16,11 +16,37 @@ def make_state(
     lat: float = 0.0,
     lng: float = 0.0,
     geocoded_location: str | None = None,
+    location: list | None = None,
 ) -> dict:
-    attrs: dict = {"latitude": lat, "longitude": lng}
+    attrs: dict = {}
+    if location is not None:
+        attrs["location"] = location
+    else:
+        attrs["latitude"] = lat
+        attrs["longitude"] = lng
     if geocoded_location:
         attrs["geocoded_location"] = geocoded_location
     return {"state": state, "last_changed": dt(hour, minute), "attributes": attrs}
+
+
+def make_visit(
+    place: str,
+    hour_start: int,
+    hour_end: int | None,
+    lat: float = 0.0,
+    lng: float = 0.0,
+    minute_start: int = 0,
+    minute_end: int = 0,
+) -> Visit:
+    return Visit(
+        visit_id=f"id_{place}_{hour_start}_{minute_start}",
+        place_name=place,
+        start=datetime(2024, 1, 15, hour_start, minute_start, tzinfo=UTC),
+        end=datetime(2024, 1, 15, hour_end, minute_end, tzinfo=UTC) if hour_end is not None else None,
+        lat=lat,
+        lng=lng,
+        source="ha_zone",
+    )
 
 
 class TestDeriveVisits:
@@ -83,6 +109,14 @@ class TestDeriveVisits:
         visits = derive_visits(history, ENTITY, window_end)
 
         assert visits[0].geocoded_location == "123 Main St"
+
+    def test_address_state_sets_geocoded_location(self):
+        # sensor.*_geocoded_location entity: state IS the address
+        history = [make_state("123 Main St, City, CA 94110, USA", 8, lat=37.7, lng=-122.4)]
+        window_end = datetime(2024, 1, 15, 20, tzinfo=UTC)
+        visits = derive_visits(history, ENTITY, window_end)
+
+        assert visits[0].geocoded_location == "123 Main St, City, CA 94110, USA"
 
     def test_visit_id_is_deterministic(self):
         history = [make_state("home", 8)]
@@ -229,3 +263,80 @@ class TestMergeConsecutiveVisits:
 
     def test_empty_returns_empty(self):
         assert merge_consecutive_visits([]) == []
+
+
+class TestSensorLocationList:
+    def test_sensor_location_list_parsed_as_lat_lng(self):
+        # sensor.*_geocoded_location stores GPS as attrs["location"] = [lat, lng]
+        history = [make_state("123 Main St, City, CA", 8, location=[37.7, -122.4])]
+        window_end = datetime(2024, 1, 15, 20, tzinfo=UTC)
+        visits = derive_visits(history, ENTITY, window_end)
+        assert visits[0].lat == 37.7
+        assert visits[0].lng == -122.4
+
+    def test_latitude_longitude_keys_still_work(self):
+        history = [make_state("home", 8, lat=37.7, lng=-122.4)]
+        window_end = datetime(2024, 1, 15, 20, tzinfo=UTC)
+        visits = derive_visits(history, ENTITY, window_end)
+        assert visits[0].lat == 37.7
+        assert visits[0].lng == -122.4
+
+    def test_no_gps_attrs_gives_zero(self):
+        history = [{"state": "home", "last_changed": dt(8), "attributes": {}}]
+        window_end = datetime(2024, 1, 15, 20, tzinfo=UTC)
+        visits = derive_visits(history, ENTITY, window_end)
+        assert visits[0].lat == 0.0
+        assert visits[0].lng == 0.0
+
+
+class TestMergeNearbyVisits:
+    def test_empty_returns_empty(self):
+        assert merge_nearby_visits([]) == []
+
+    def test_single_visit_unchanged(self):
+        v = make_visit("Home", 8, 17, lat=37.7, lng=-122.4)
+        assert merge_nearby_visits([v]) == [v]
+
+    def test_two_visits_within_20m_merged(self):
+        # 37.7, -122.4 and 37.70001, -122.4 are ~11 m apart
+        v1 = make_visit("123 Oak St", 8, 9, lat=37.7, lng=-122.4)
+        v2 = make_visit("125 Oak St", 9, 10, lat=37.70001, lng=-122.4)
+        result = merge_nearby_visits([v1, v2])
+        assert len(result) == 1
+        assert result[0].start == v1.start
+        assert result[0].end == v2.end
+
+    def test_two_visits_far_apart_not_merged(self):
+        # 1 km apart
+        v1 = make_visit("Starbucks", 8, 9, lat=37.7, lng=-122.4)
+        v2 = make_visit("Home Depot", 9, 10, lat=37.71, lng=-122.4)
+        result = merge_nearby_visits([v1, v2])
+        assert len(result) == 2
+
+    def test_most_time_wins_for_place_name(self):
+        # v1: 5 min at A, v2: 30 min at B (within 20m), v3: 5 min at C (within 20m of v2)
+        # all within 20m of previous → one group; B has most time
+        lat = 37.7
+        lng = -122.4
+        v1 = make_visit("Addr A", 8, None, lat=lat, lng=lng, minute_start=0)
+        v1 = make_visit("Addr A", 8, 8, lat=lat, lng=lng, minute_start=0, minute_end=5)
+        v2 = make_visit("Addr B", 8, 9, lat=lat + 0.00001, lng=lng, minute_start=5, minute_end=35)
+        v3 = make_visit("Addr C", 9, 9, lat=lat + 0.00002, lng=lng, minute_start=35, minute_end=40)
+        result = merge_nearby_visits([v1, v2, v3])
+        assert len(result) == 1
+        assert result[0].place_name == "Addr B"
+        assert result[0].start == v1.start
+        assert result[0].end == v3.end
+
+    def test_no_gps_visits_not_merged(self):
+        # lat=0, lng=0 → no GPS → don't merge even though coords "match"
+        v1 = make_visit("Addr A", 8, 9, lat=0.0, lng=0.0)
+        v2 = make_visit("Addr B", 9, 10, lat=0.0, lng=0.0)
+        result = merge_nearby_visits([v1, v2])
+        assert len(result) == 2
+
+    def test_visit_id_of_merged_group_is_first_visits_id(self):
+        v1 = make_visit("Addr A", 8, 9, lat=37.7, lng=-122.4)
+        v2 = make_visit("Addr B", 9, 10, lat=37.70001, lng=-122.4)
+        result = merge_nearby_visits([v1, v2])
+        assert result[0].visit_id == v1.visit_id

@@ -1,5 +1,9 @@
 import json
+import logging
 from unittest.mock import MagicMock, patch
+
+import pytest
+from googleapiclient.errors import HttpError
 
 from timeline_sync.contact_resolver import ContactResolver, _normalize
 
@@ -74,7 +78,7 @@ class TestContactResolverCache:
         assert cache.exists()
         saved = json.loads(cache.read_text())
         assert "123 Oak St, San Francisco, CA 94110, USA" in saved
-        assert saved["123 Oak St, San Francisco, CA 94110, USA"] == "Dan's Home"
+        assert saved["123 Oak St, San Francisco, CA 94110, USA"] == "Dan Smith's Home"
 
     def test_cache_loaded_on_init(self, tmp_path):
         cache = tmp_path / "contacts_cache.json"
@@ -113,7 +117,7 @@ class TestContactResolverCache:
             svc.people.return_value.connections.return_value.list.return_value.execute.return_value = contacts_data
             resolver = ContactResolver(mock_creds, cache_path=cache, refresh_hours=24)
 
-        assert resolver.resolve("789 Elm St, Denver, CO") == "Jane's Home"
+        assert resolver.resolve("789 Elm St, Denver, CO") == "Jane Doe's Home"
 
     def test_contact_name_format_work(self, tmp_path):
         cache = tmp_path / "c.json"
@@ -132,4 +136,77 @@ class TestContactResolverCache:
             svc.people.return_value.connections.return_value.list.return_value.execute.return_value = contacts_data
             resolver = ContactResolver(mock_creds, cache_path=cache, refresh_hours=24)
 
-        assert resolver.resolve("100 Corp Blvd, Austin, TX") == "Jane's Work"
+        assert resolver.resolve("100 Corp Blvd, Austin, TX") == "Jane Doe's Work"
+
+    def test_contact_name_format_other(self, tmp_path):
+        cache = tmp_path / "c.json"
+        mock_creds = MagicMock()
+        contacts_data = {
+            "connections": [
+                {
+                    "names": [{"displayName": "Jane Doe", "givenName": "Jane"}],
+                    "addresses": [{"formattedValue": "200 Other Rd, Austin, TX", "type": "other"}],
+                }
+            ]
+        }
+        with patch("timeline_sync.contact_resolver.build") as mock_build:
+            svc = MagicMock()
+            mock_build.return_value = svc
+            svc.people.return_value.connections.return_value.list.return_value.execute.return_value = contacts_data
+            resolver = ContactResolver(mock_creds, cache_path=cache, refresh_hours=24)
+
+        assert resolver.resolve("200 Other Rd, Austin, TX") == "Jane Doe's Other Address"
+
+
+class TestContactResolverDiagnostics:
+    def test_http_error_logged_with_status(self, tmp_path, caplog):
+        cache = tmp_path / "c.json"
+        mock_creds = MagicMock()
+        resp = MagicMock()
+        resp.status = 403
+        resp.reason = "Forbidden"
+        http_error = HttpError(resp=resp, content=b'{"error": {"status": "OTHER_ERROR"}}')
+
+        with patch("timeline_sync.contact_resolver.build") as mock_build:
+            svc = MagicMock()
+            mock_build.return_value = svc
+            svc.people.return_value.connections.return_value.list.return_value.execute.side_effect = http_error
+            with caplog.at_level(logging.WARNING, logger="timeline_sync.contact_resolver"):
+                ContactResolver(mock_creds, cache_path=cache, refresh_hours=24)
+
+        assert "403" in caplog.text
+
+    def test_permission_denied_logged_as_api_not_enabled(self, tmp_path, caplog):
+        cache = tmp_path / "c.json"
+        mock_creds = MagicMock()
+        resp = MagicMock()
+        resp.status = 403
+        resp.reason = "Forbidden"
+        http_error = HttpError(resp=resp, content=b'{"error": {"status": "PERMISSION_DENIED"}}')
+
+        with patch("timeline_sync.contact_resolver.build") as mock_build:
+            svc = MagicMock()
+            mock_build.return_value = svc
+            svc.people.return_value.connections.return_value.list.return_value.execute.side_effect = http_error
+            with caplog.at_level(logging.WARNING, logger="timeline_sync.contact_resolver"):
+                ContactResolver(mock_creds, cache_path=cache, refresh_hours=24)
+
+        assert "not enabled" in caplog.text.lower()
+        assert "console.cloud.google.com" in caplog.text
+
+    def test_debug_logging_on_resolve(self, caplog):
+        resolver = _make_resolver_with_map(
+            {"123 Oak St, San Francisco, CA 94110, USA": "Dan's Home"}
+        )
+        with caplog.at_level(logging.DEBUG, logger="timeline_sync.contact_resolver"):
+            resolver.resolve("123 Oak St, San Francisco, CA 94110, USA")
+
+        assert any("match" in r.message.lower() for r in caplog.records if r.levelno == logging.DEBUG)
+
+    def test_threshold_80_matches_close_address(self):
+        # Threshold 0.80: address without country should still match
+        resolver = _make_resolver_with_map(
+            {"123 Oak St, San Francisco, CA 94110, USA": "Dan's Home"}
+        )
+        result = resolver.resolve("123 Oak St, San Francisco, CA 94110")
+        assert result == "Dan's Home"

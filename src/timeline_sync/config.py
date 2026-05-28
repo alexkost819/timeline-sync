@@ -17,6 +17,7 @@ class Config:
     places_daily_limit: int
     sync_window_hours: int
     min_visit_minutes: int
+    gps_proximity_meters: float
     contacts_refresh_hours: int
     contacts_cache_file: str
 
@@ -38,6 +39,7 @@ def load_config() -> Config:
         places_daily_limit=int(os.getenv("PLACES_DAILY_LIMIT", "50")),
         sync_window_hours=int(os.getenv("SYNC_WINDOW_HOURS", "48")),
         min_visit_minutes=int(os.getenv("MIN_VISIT_MINUTES", "10")),
+        gps_proximity_meters=float(os.getenv("GPS_PROXIMITY_METERS", "20.0")),
         contacts_refresh_hours=int(os.getenv("CONTACTS_REFRESH_HOURS", "24")),
         contacts_cache_file=os.getenv("CONTACTS_CACHE_FILE", "contacts_cache.json"),
     )

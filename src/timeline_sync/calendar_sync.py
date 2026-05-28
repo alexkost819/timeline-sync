@@ -8,7 +8,18 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+from .place_resolver import _format_address
 from .visit_deriver import Visit
+
+
+def _dt_equal(a: str, b: str) -> bool:
+    """Treat ISO 8601 datetimes as equal regardless of Z vs +00:00 suffix."""
+    try:
+        return datetime.fromisoformat(a.replace("Z", "+00:00")) == datetime.fromisoformat(
+            b.replace("Z", "+00:00")
+        )
+    except (ValueError, AttributeError):
+        return a == b
 
 log = logging.getLogger(__name__)
 
@@ -21,12 +32,8 @@ VISIT_ID_KEY = "ha_visit_id"
 
 def _event_body(visit: Visit, now: datetime) -> dict[str, Any]:
     end = visit.end or now
-    description = f"lat: {visit.lat}, lng: {visit.lng}\nsource: {visit.source}"
-    if visit.alternatives:
-        description += f"\nOther options: {', '.join(visit.alternatives)}"
     body: dict[str, Any] = {
         "summary": visit.place_name,
-        "description": description,
         "start": {"dateTime": visit.start.isoformat(), "timeZone": "UTC"},
         "end": {"dateTime": end.isoformat(), "timeZone": "UTC"},
         "extendedProperties": {
@@ -37,7 +44,9 @@ def _event_body(visit: Visit, now: datetime) -> dict[str, Any]:
         },
     }
     if visit.geocoded_location:
-        body["location"] = visit.geocoded_location
+        body["location"] = _format_address(visit.geocoded_location)
+    if visit.alternatives:
+        body["description"] = f"Other options: {', '.join(visit.alternatives)}"
     return body
 
 
@@ -81,7 +90,6 @@ class CalendarSync:
                     calendarId=calendar_id,
                     timeMin=start.astimezone(UTC).isoformat(),
                     timeMax=end.astimezone(UTC).isoformat(),
-                    privateExtendedProperty=f"{VISIT_ID_KEY}=*",
                     singleEvents=True,
                     pageToken=page_token,
                 )
@@ -112,7 +120,7 @@ class CalendarSync:
         existing = self._fetch_events_in_window(calendar_id, window_start, window_end)
 
         visit_map = {v.visit_id: v for v in visits}
-        counts = {"created": 0, "updated": 0, "deleted": 0}
+        counts = {"created": 0, "updated": 0, "deleted": 0, "unchanged": 0}
 
         # Create or update
         for visit_id, visit in visit_map.items():
@@ -125,9 +133,19 @@ class CalendarSync:
                 old_summary = existing_event.get("summary", "")
                 new_loc = body.get("location", "")
                 old_loc = existing_event.get("location", "")
-                end_changed = new_end != old_end and visit.end is not None
-                if new_summary != old_summary or end_changed or new_loc != old_loc:
-                    log.info("Updating event for visit %s (%s)", visit_id, visit.place_name)
+                end_changed = visit.end is not None and not _dt_equal(new_end, old_end)
+                summary_changed = new_summary != old_summary
+                loc_changed = new_loc != old_loc
+                if summary_changed or end_changed or loc_changed:
+                    reasons = [
+                        *(["summary"] if summary_changed else []),
+                        *(["end"] if end_changed else []),
+                        *(["location"] if loc_changed else []),
+                    ]
+                    log.info(
+                        "Updating event for visit %s (%s) — changed: %s",
+                        visit_id, visit.place_name, ", ".join(reasons),
+                    )
                     if not dry_run:
                         self._service.events().update(
                             calendarId=calendar_id,
@@ -135,6 +153,8 @@ class CalendarSync:
                             body=body,
                         ).execute()
                     counts["updated"] += 1
+                else:
+                    counts["unchanged"] += 1
             else:
                 log.info("Creating event for visit %s (%s)", visit_id, visit.place_name)
                 if not dry_run:

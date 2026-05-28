@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import math
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Any, Literal
@@ -55,9 +56,13 @@ def derive_visits(
         state = entry.get("state", "")
         changed_at = _parse_dt(entry["last_changed"])
         attrs = entry.get("attributes", {})
-        lat = float(attrs.get("latitude", 0.0))
-        lng = float(attrs.get("longitude", 0.0))
+        loc = attrs.get("location") or []
+        lat = float(attrs.get("latitude") or (loc[0] if len(loc) >= 2 else 0.0))
+        lng = float(attrs.get("longitude") or (loc[1] if len(loc) >= 2 else 0.0))
         geocoded = attrs.get("geocoded_location") or None
+        # sensor.*_geocoded_location entity: state IS the address
+        if geocoded is None and ", " in state:
+            geocoded = state
 
         if state != current_state:
             if current_state is not None and current_start is not None:
@@ -118,3 +123,39 @@ def merge_consecutive_visits(visits: list[Visit]) -> list[Visit]:
         else:
             merged.append(v)
     return merged
+
+
+_EARTH_RADIUS_M = 6_371_000
+
+
+def _haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    dlat = math.radians(lat2 - lat1)
+    dlng = math.radians(lng2 - lng1)
+    a = (math.sin(dlat / 2) ** 2
+         + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlng / 2) ** 2)
+    return 2 * math.asin(math.sqrt(a)) * _EARTH_RADIUS_M
+
+
+def _best_of_group(group: list[Visit]) -> Visit:
+    if len(group) == 1:
+        return group[0]
+    window_end = group[-1].end or group[-1].start
+    best = max(group, key=lambda v: ((v.end or window_end) - v.start).total_seconds())
+    return replace(best, start=group[0].start, end=group[-1].end, visit_id=group[0].visit_id)
+
+
+def merge_nearby_visits(visits: list[Visit], radius_m: float = 20.0) -> list[Visit]:
+    """Merge consecutive visits whose GPS coords are within radius_m. Most-time visit provides name."""
+    if not visits:
+        return []
+    result: list[Visit] = []
+    group: list[Visit] = [visits[0]]
+    for v in visits[1:]:
+        prev = group[-1]
+        if (prev.lat or prev.lng) and _haversine_m(prev.lat, prev.lng, v.lat, v.lng) <= radius_m:
+            group.append(v)
+        else:
+            result.append(_best_of_group(group))
+            group = [v]
+    result.append(_best_of_group(group))
+    return result

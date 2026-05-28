@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from timeline_sync.place_resolver import PlaceResolver
+from timeline_sync.place_resolver import PlaceResolver, _format_address
 from timeline_sync.visit_deriver import Visit
 
 ZONES = [
@@ -36,7 +36,45 @@ def make_visit(
     )
 
 
+class TestFormatAddress:
+    def test_lowercases_state_country_uppercased(self):
+        assert _format_address("123 main st, city, ca, usa") == "123 Main St, City, CA, USA"
+
+    def test_preserves_existing_caps(self):
+        assert _format_address("123 Oak St, San Francisco, CA 94110, USA") == "123 Oak St, San Francisco, CA 94110, USA"
+
+    def test_full_state_name_not_uppercased(self):
+        assert _format_address("123 main st, boston, massachusetts, us") == "123 Main St, Boston, Massachusetts, US"
+
+    def test_zip_code_preserved(self):
+        assert _format_address("123 main st, san francisco, ca 94110, usa") == "123 Main St, San Francisco, CA 94110, USA"
+
+
+def _make_contact_resolver(entries: dict[str, str]):
+    from timeline_sync.contact_resolver import ContactResolver, _normalize
+    cr = ContactResolver.__new__(ContactResolver)
+    cr._map = {_normalize(addr): label for addr, label in entries.items()}
+    return cr
+
+
 class TestPlaceResolver:
+    @pytest.mark.asyncio
+    async def test_zone_visit_with_geocoded_location_uses_contact_label(self):
+        cr = _make_contact_resolver({"123 Oak St, San Francisco, CA 94110, USA": "Dan Smith's Home"})
+        resolver = PlaceResolver(ZONES, contact_resolver=cr)
+        visit = make_visit("home", lat=37.7, lng=-122.4, geocoded_location="123 Oak St, San Francisco, CA 94110, USA")
+        enriched = await resolver.enrich_visit(visit)
+        assert enriched.place_name == "Dan Smith's Home"
+        assert enriched.source == "contact"
+
+    @pytest.mark.asyncio
+    async def test_zone_visit_without_geocoded_uses_friendly_name(self):
+        resolver = PlaceResolver(ZONES)
+        visit = make_visit("home", lat=37.7, lng=-122.4)
+        enriched = await resolver.enrich_visit(visit)
+        assert enriched.place_name == "Home"
+        assert enriched.source == "ha_zone"
+
     def test_zone_slug_mapped_to_friendly_name(self):
         resolver = PlaceResolver(ZONES)
         assert resolver.resolve_place_name(make_visit("home")) == "Home"
@@ -111,6 +149,68 @@ class TestPlaceResolver:
         mock_nearby.assert_not_called()
         assert enriched.place_name == "Starbucks"
         assert enriched.source == "places_api"
+
+    @pytest.mark.asyncio
+    async def test_sensor_address_state_formatted_as_geocode(self):
+        # lat/lng far from test zones (zone.home is at 37.7, -122.4)
+        resolver = PlaceResolver(ZONES, places_api_key=None)
+        visit = make_visit("1103 fairwood ave, sunnyvale, ca 94089, usa", lat=37.37, lng=-122.01)
+        enriched = await resolver.enrich_visit(visit)
+        assert enriched.place_name == "1103 Fairwood Ave, Sunnyvale, CA 94089, USA"
+        assert enriched.source == "geocode"
+        assert enriched.geocoded_location == "1103 fairwood ave, sunnyvale, ca 94089, usa"
+
+    @pytest.mark.asyncio
+    async def test_sensor_address_location_field_set_in_event_body(self):
+        from timeline_sync.calendar_sync import _event_body
+
+        resolver = PlaceResolver(ZONES, places_api_key=None)
+        visit = make_visit("1103 fairwood ave, sunnyvale, ca 94089, usa", lat=37.37, lng=-122.01)
+        enriched = await resolver.enrich_visit(visit)
+        body = _event_body(enriched, datetime(2024, 1, 15, 9, tzinfo=UTC))
+        assert body.get("location") == "1103 Fairwood Ave, Sunnyvale, CA 94089, USA"
+
+    @pytest.mark.asyncio
+    async def test_sensor_address_at_home_zone_coords_uses_zone_name(self):
+        # Sensor fusion: coordinates match home zone → treat as zone visit
+        resolver = PlaceResolver(ZONES, places_api_key=None)
+        visit = make_visit("123 main st, san francisco, ca, usa", lat=37.7, lng=-122.4)
+        enriched = await resolver.enrich_visit(visit)
+        assert enriched.place_name == "Home"
+        assert enriched.source == "ha_zone"
+
+    @pytest.mark.asyncio
+    async def test_sensor_address_at_home_zone_uses_contact_if_available(self):
+        cr = _make_contact_resolver({"123 main st, san francisco, ca, usa": "Alex Smith's Home"})
+        resolver = PlaceResolver(ZONES, places_api_key=None, contact_resolver=cr)
+        visit = make_visit("123 main st, san francisco, ca, usa", lat=37.7, lng=-122.4)
+        enriched = await resolver.enrich_visit(visit)
+        assert enriched.place_name == "Alex Smith's Home"
+        assert enriched.source == "contact"
+
+    @pytest.mark.asyncio
+    async def test_sensor_address_outside_zone_gets_places_api_alternatives(self):
+        resolver = PlaceResolver(ZONES, places_api_key="test-key")
+        visit = make_visit("584 n rengstorff ave, mountain view, ca 94043, usa", lat=37.37, lng=-122.01)
+
+        with patch.object(
+            resolver, "_nearby_place", new=AsyncMock(return_value=["Chipotle", "Subway"])
+        ):
+            enriched = await resolver.enrich_visit(visit)
+
+        assert enriched.place_name == "Chipotle"
+        assert enriched.alternatives == ("Subway",)
+        assert enriched.source == "places_api"
+
+    @pytest.mark.asyncio
+    async def test_geocode_fallback_applies_formatting(self):
+        resolver = PlaceResolver(ZONES, places_api_key=None)
+        visit = make_visit("not_home", lat=37.8, lng=-122.5, geocoded_location="123 main st, san francisco, ca 94110, usa")
+
+        enriched = await resolver.enrich_visit(visit)
+
+        assert enriched.place_name == "123 Main St, San Francisco, CA 94110, USA"
+        assert enriched.source == "geocode"
 
     @pytest.mark.asyncio
     async def test_quota_exhausted_falls_back_to_geocoded_location(self, tmp_path):
